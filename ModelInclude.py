@@ -130,6 +130,10 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
 
     # ── STAGE 4: Main inference + PID loop ───────────────────────────────────
     while True:
+        # Check duration FIRST so we exit even if no packets arrive (e.g. ESP32 unresponsive)
+        if time.perf_counter() - grip_start >= config['GRIP_DURATION']:
+            break
+
         line = ser.readline()
         if not line:
             time.sleep(0.001)
