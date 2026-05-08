@@ -62,12 +62,18 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     TRAIN_BASELINE_G = 0.004369
     TARGET_HZ        = 1.8                          # must match training sampling rate
     INTERVAL         = 1.0 / TARGET_HZ              # ~0.556 s between inferences
+    SEQ_LEN          = 60                           # model expects 60 timesteps
+    BUFFER_HZ        = 100                          # ESP32 packet rate
+    BUFFER_MAXLEN    = int(SEQ_LEN * (BUFFER_HZ / TARGET_HZ))   # ~3333 packets ≈ 33 s
 
-    # ── STAGE 1: Buffer init ──────────────────────────────────────────────────
+    # ── STAGE 1: Buffer init (Option C: long packet-rate buffer) ─────────────
+    # Issue 1 / Option C: keep buffer at packet rate (~100 Hz) and resample
+    # to 60 evenly-spaced points at inference time so the model sees a true
+    # 33-second window (matching its 1.8 Hz training distribution).
     print(f"\n{'='*60}")
-    print(f"[STAGE 1] Seeding buffer from prefill")
-    data_buffer = deque(list(prefill_buffer) if prefill_buffer else [], maxlen=60)
-    print(f"  Buffer seeded: {len(data_buffer)}/60 rows")
+    print(f"[STAGE 1] Seeding buffer from prefill (maxlen={BUFFER_MAXLEN})")
+    data_buffer = deque(list(prefill_buffer) if prefill_buffer else [], maxlen=BUFFER_MAXLEN)
+    print(f"  Buffer seeded: {len(data_buffer)}/{BUFFER_MAXLEN} rows")
 
     # ── STAGE 2: Baseline calibration (before grip, with timeout) ────────────
     print("[STAGE 2] Calibrating baseline (30 samples, PWM=0)...")
@@ -174,15 +180,23 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             dt         = now - last_infer      # actual elapsed since last inference
             last_infer = now
 
-            # --- Inference ---------------------------------------------------
+            # --- Inference (Option C: resample buffer to 60 points) ----------
+            # Buffer fills at ~100 Hz; resample to 60 evenly-spaced points so
+            # the model sees its trained 33 s temporal scale regardless of
+            # how fast the buffer is being filled.
             buf_list = list(data_buffer)
-            n_pad    = 60 - len(buf_list)
-            padded   = np.array(
-                [[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list, dtype=np.float32
-            )
+            if len(buf_list) < SEQ_LEN:
+                # Not enough samples yet — pad with baseline at the start
+                n_pad = SEQ_LEN - len(buf_list)
+                seq60 = [[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list
+            else:
+                # Resample down to SEQ_LEN evenly-spaced indices
+                idx   = np.linspace(0, len(buf_list) - 1, SEQ_LEN).astype(int)
+                seq60 = [buf_list[i] for i in idx]
+            seq60 = np.array(seq60, dtype=np.float32)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                scaled = scaler_X.transform(padded).reshape(1, 60, 2)
+                scaled = scaler_X.transform(seq60).reshape(1, SEQ_LEN, 2)
 
             pred       = model(scaled, training=False)
             force      = max(0.0, float(

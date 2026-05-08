@@ -251,21 +251,27 @@ def main():
     material = args.material
     total_pkts = 0
 
-    # Rolling 60-row pre-fill buffer — keeps most recent idle data ready
-    prefill_buffer = deque(maxlen=60)
+    # Rolling pre-fill buffer at packet rate (~100 Hz) to match data_buffer
+    # in run_one_grip() — 33 s of context per Issue 1 / Option C.
+    prefill_buffer = deque(maxlen=3333)   # 60 * (100/1.8) ≈ 3333
 
     while running:
-        # Drain + keep alive + pre-fill buffer
-        line = ser.readline()
-        ser.write("PWM:0")    # heartbeat (PWM:0 = stopped + keeps watchdog happy)
-        if line:
+        # Drain ALL available packets (not just one) so prefill captures
+        # the full 100 Hz stream during idle periods.
+        while True:
+            line = ser.readline()
+            if not line:
+                break
             d = parse_sensor(line)
-            if d:
-                r_kohm = d['res'] / 1000.0
-                if r_kohm <= 0 or r_kohm > 800:
-                    r_kohm = 800.0
-                conductance = 1.0 / (r_kohm + 1e-6)
-                prefill_buffer.append([conductance, 0])
+            if not d:
+                continue
+            r_kohm = d['res'] / 1000.0
+            if r_kohm <= 0 or r_kohm > 800:
+                r_kohm = 800.0
+            conductance = 1.0 / (r_kohm + 1e-6)
+            prefill_buffer.append([conductance, 0])
+
+        ser.write("PWM:0")    # heartbeat (PWM:0 = stopped + keeps watchdog happy)
 
         while input_q:
             cmd = input_q.popleft()
