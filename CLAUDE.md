@@ -188,21 +188,27 @@ Every packet received:
 4. Write CSV row (uses `last_force` and `current_pwm` from previous inference tick).
 5. If `(now - last_infer) >= INTERVAL` → run inference + PID:
 
-**Inference (Option C — resample-on-inference, see Issue 1):**
+**Inference (Option B — 1.8 Hz buffer fill, see Issue 1):**
 ```python
-# data_buffer is a deque(maxlen ≈ 3333) filled at packet rate (~100 Hz).
-# Resample to 60 evenly-spaced points so the model sees its trained 33 s window.
+# data_buffer is a deque(maxlen=60) appended at exactly TARGET_HZ (1.8 Hz)
+# in Stage 4. The 60-slot window therefore represents 60 / 1.8 ≈ 33 s of
+# real time — the same temporal scale the model was trained on. No
+# resampling needed; just baseline-pad if cold-started.
 buf_list = list(data_buffer)
-if len(buf_list) < 60:
-    n_pad = 60 - len(buf_list)
-    seq60 = [[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list   # baseline-pad cold start
-else:
-    idx   = np.linspace(0, len(buf_list) - 1, 60).astype(int)
-    seq60 = [buf_list[i] for i in idx]                     # decimate to 60
-seq60  = np.array(seq60, dtype=np.float32)
-scaled = scaler_X.transform(seq60).reshape(1, 60, 2)
-pred   = model(scaled, training=False)
-force  = max(0.0, scaler_y.inverse_transform([[float(np.array(pred).flat[0])]])[0][0])
+n_pad    = 60 - len(buf_list)
+padded   = np.array([[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list, dtype=np.float32)
+scaled   = scaler_X.transform(padded).reshape(1, 60, 2)
+pred     = model(scaled, training=False)
+force    = max(0.0, scaler_y.inverse_transform([[float(np.array(pred).flat[0])]])[0][0])
+```
+
+**Buffer-append gate (Stage 4):**
+```python
+# Append to data_buffer only at the 1.8 Hz cadence. Drop intermediate
+# packets — they are still used for CSV logging and PID state.
+if (now - last_buffer_append) >= INTERVAL:
+    data_buffer.append([shifted_cond, float(is_press)])
+    last_buffer_append = now
 ```
 
 **PID:**
@@ -290,12 +296,12 @@ Written by `App.py` (header) and `ModelInclude.py` (rows). One row per sensor pa
 
 ## 9. `prefill_buffer` — Inter-Grip Context
 
-`App.py` maintains a `deque(maxlen=3333)` that collects `[conductance, 0]` samples at packet rate (~100 Hz) from idle periods between grips. This is passed to `run_one_grip()` as `prefill_buffer` and seeds `data_buffer` for the next grip.
+`App.py` maintains a `deque(maxlen=60)` that collects `[conductance, 0]` samples at the model's training cadence (1.8 Hz) from idle periods between grips. The idle loop drains all serial packets to stay caught up, but only **appends** to `prefill_buffer` once per `1/1.8 ≈ 0.556 s`. This is passed to `run_one_grip()` as `prefill_buffer` and seeds `data_buffer` for the next grip.
 
 - Provides the model with up to ~33 s of recent sensor context before the grip starts.
 - `is_press=0` for all prefill rows (no contact during idle).
 - After each grip, `prefill_buffer.clear()` is called so the next grip starts fresh.
-- **Sized to match `data_buffer`** in `run_one_grip()` (Issue 1 / Option C). The previous 60-row prefill represented only ~3 s of context and was inconsistent with the active buffer's rate.
+- **Cadence matches `data_buffer`** inside `run_one_grip()` (Issue 1 / Option B), so seeding is consistent with the active buffer.
 
 ---
 
@@ -305,11 +311,9 @@ Written by `App.py` (header) and `ModelInclude.py` (rows). One row per sensor pa
 |---|---|---|---|
 | `TRAIN_BASELINE_G` | `0.004369` | ModelInclude | Mean conductance from training data; anchors distribution shift |
 | `SENSOR_GAIN` | `1.0` (original) / `0.08` (new sensor) | App.py → config | Rescales conductance slope for cross-hardware compatibility |
-| `TARGET_HZ` | `1.8` | ModelInclude | Inference rate; must match training data sample rate exactly |
-| `INTERVAL` | `1 / 1.8 ≈ 0.556 s` | ModelInclude | Derived from TARGET_HZ |
-| `BUFFER_HZ` | `100` | ModelInclude | Packet rate at which `data_buffer` is appended |
-| `BUFFER_MAXLEN` | `3333` | ModelInclude | `60 * (BUFFER_HZ / TARGET_HZ)` ≈ 33 s of context (Option C) |
-| `SEQ_LEN` | `60` | ModelInclude | Model input sequence length; resampled-to from BUFFER_MAXLEN at inference |
+| `TARGET_HZ` | `1.8` | ModelInclude | Inference rate AND `data_buffer` append rate (must match training rate) |
+| `INTERVAL` | `1 / 1.8 ≈ 0.556 s` | ModelInclude | Derived from TARGET_HZ; gates both inference and buffer-append |
+| `SEQ_LEN` | `60` | ModelInclude | Model input sequence length; `data_buffer` maxlen is exactly this |
 | `threshold_res_k` | `baseline × 0.93` | ModelInclude | 7% drop = contact detection threshold (Report 2: was 0.97) |
 | Resistance clamp | `0 < res_k ≤ 800 kΩ` | ModelInclude | Suppresses open-circuit spikes |
 | Integral clamp | `±100` | ModelInclude | Anti-windup |

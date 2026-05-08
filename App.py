@@ -27,7 +27,7 @@ from ModelInclude import run_one_grip # import ฟังก์ชันมา
 #  ตัวแปรกำหนดเอง — แก้ตรงนี้
 # =====================================================
 
-GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
+GRIP_PWM = -200        # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
 GRIP_DURATION = 8.0    # เวลาบีบ (วินาที) — Report 2: เพิ่มเวลาให้ integral สะสมพอ
 RELEASE_PWM = 200     # PWM ตอนคลาย
 RELEASE_TARGET = 106.0 # ปล่อยจนองศากลับถึงค่านี้ (home ~151.5 deg, เผื่อ margin 3.5 deg)
@@ -251,13 +251,17 @@ def main():
     material = args.material
     total_pkts = 0
 
-    # Rolling pre-fill buffer at packet rate (~100 Hz) to match data_buffer
-    # in run_one_grip() — 33 s of context per Issue 1 / Option C.
-    prefill_buffer = deque(maxlen=3333)   # 60 * (100/1.8) ≈ 3333
+    # Rolling 60-row pre-fill buffer at the model's training cadence (1.8 Hz).
+    # Issue 1 / Option B: matches the buffer rate used inside run_one_grip()
+    # so the 60-slot deque represents ~33 s of context — what the model expects.
+    PREFILL_INTERVAL = 1.0 / 1.8                      # match TARGET_HZ in ModelInclude
+    prefill_buffer   = deque(maxlen=60)
+    last_prefill_t   = 0.0
 
     while running:
-        # Drain ALL available packets (not just one) so prefill captures
-        # the full 100 Hz stream during idle periods.
+        # Drain all available packets so we don't fall behind, but only
+        # APPEND to prefill_buffer at 1.8 Hz cadence.
+        latest_conductance = None
         while True:
             line = ser.readline()
             if not line:
@@ -268,8 +272,12 @@ def main():
             r_kohm = d['res'] / 1000.0
             if r_kohm <= 0 or r_kohm > 800:
                 r_kohm = 800.0
-            conductance = 1.0 / (r_kohm + 1e-6)
-            prefill_buffer.append([conductance, 0])
+            latest_conductance = 1.0 / (r_kohm + 1e-6)
+
+        now_t = time.perf_counter()
+        if latest_conductance is not None and (now_t - last_prefill_t) >= PREFILL_INTERVAL:
+            prefill_buffer.append([latest_conductance, 0])
+            last_prefill_t = now_t
 
         ser.write("PWM:0")    # heartbeat (PWM:0 = stopped + keeps watchdog happy)
 

@@ -61,19 +61,17 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
 
     TRAIN_BASELINE_G = 0.004369
     TARGET_HZ        = 1.8                          # must match training sampling rate
-    INTERVAL         = 1.0 / TARGET_HZ              # ~0.556 s between inferences
+    INTERVAL         = 1.0 / TARGET_HZ              # ~0.556 s between inferences / buffer-append gate
     SEQ_LEN          = 60                           # model expects 60 timesteps
-    BUFFER_HZ        = 100                          # ESP32 packet rate
-    BUFFER_MAXLEN    = int(SEQ_LEN * (BUFFER_HZ / TARGET_HZ))   # ~3333 packets ≈ 33 s
 
-    # ── STAGE 1: Buffer init (Option C: long packet-rate buffer) ─────────────
-    # Issue 1 / Option C: keep buffer at packet rate (~100 Hz) and resample
-    # to 60 evenly-spaced points at inference time so the model sees a true
-    # 33-second window (matching its 1.8 Hz training distribution).
+    # ── STAGE 1: Buffer init (Option B: 1.8 Hz buffer fill) ──────────────────
+    # Issue 1 / Option B: append to data_buffer at the 1.8 Hz training cadence,
+    # so the 60-slot deque naturally represents ~33 s of context — exactly
+    # what the model was trained on. No resampling needed at inference.
     print(f"\n{'='*60}")
-    print(f"[STAGE 1] Seeding buffer from prefill (maxlen={BUFFER_MAXLEN})")
-    data_buffer = deque(list(prefill_buffer) if prefill_buffer else [], maxlen=BUFFER_MAXLEN)
-    print(f"  Buffer seeded: {len(data_buffer)}/{BUFFER_MAXLEN} rows")
+    print(f"[STAGE 1] Seeding buffer from prefill")
+    data_buffer = deque(list(prefill_buffer) if prefill_buffer else [], maxlen=SEQ_LEN)
+    print(f"  Buffer seeded: {len(data_buffer)}/{SEQ_LEN} rows")
 
     # ── STAGE 2: Baseline calibration (before grip, with timeout) ────────────
     print("[STAGE 2] Calibrating baseline (30 samples, PWM=0)...")
@@ -123,11 +121,12 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     grip_start = time.perf_counter()   # monotonic clock for interval math
     wall_start = time.time()           # wall clock for t_ms CSV column
 
-    is_press   = 0
-    detected   = False
-    pkt_count  = 0
-    last_infer = grip_start
-    max_force  = 0.0
+    is_press           = 0
+    detected           = False
+    pkt_count           = 0
+    last_infer         = grip_start
+    last_buffer_append = grip_start - INTERVAL   # so first packet immediately appends
+    max_force          = 0.0
 
     # ── Low-Pass Filter state ────────────────────────────────────────────────
     # smoothed_pwm = (target_pwm * ALPHA) + (smoothed_pwm * (1 - ALPHA))
@@ -162,7 +161,10 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             is_press = 1
             print(f"\n  [CONTACT] t={t_ms} ms  R={res_k:.2f} kOhm — PID engaged")
 
-        data_buffer.append([shifted_cond, float(is_press)])
+        # Option B: append at 1.8 Hz cadence (matches model training rate)
+        if (now - last_buffer_append) >= INTERVAL:
+            data_buffer.append([shifted_cond, float(is_press)])
+            last_buffer_append = now
 
         # ── CSV: every packet; current_pwm = what was last sent ──────────────
         if writer:
@@ -180,23 +182,17 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             dt         = now - last_infer      # actual elapsed since last inference
             last_infer = now
 
-            # --- Inference (Option C: resample buffer to 60 points) ----------
-            # Buffer fills at ~100 Hz; resample to 60 evenly-spaced points so
-            # the model sees its trained 33 s temporal scale regardless of
-            # how fast the buffer is being filled.
+            # --- Inference (Option B: buffer already at 1.8 Hz, no resample) ---
+            # Buffer fills at exactly TARGET_HZ in Stage 4, so the most recent
+            # 60 entries already represent the model's trained 33 s window.
             buf_list = list(data_buffer)
-            if len(buf_list) < SEQ_LEN:
-                # Not enough samples yet — pad with baseline at the start
-                n_pad = SEQ_LEN - len(buf_list)
-                seq60 = [[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list
-            else:
-                # Resample down to SEQ_LEN evenly-spaced indices
-                idx   = np.linspace(0, len(buf_list) - 1, SEQ_LEN).astype(int)
-                seq60 = [buf_list[i] for i in idx]
-            seq60 = np.array(seq60, dtype=np.float32)
+            n_pad    = SEQ_LEN - len(buf_list)
+            padded   = np.array(
+                [[TRAIN_BASELINE_G, 0.0]] * n_pad + buf_list, dtype=np.float32
+            )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                scaled = scaler_X.transform(seq60).reshape(1, SEQ_LEN, 2)
+                scaled = scaler_X.transform(padded).reshape(1, SEQ_LEN, 2)
 
             pred       = model(scaled, training=False)
             force      = max(0.0, float(
