@@ -57,6 +57,7 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     KD             = config.get('PID_KD', 0.5)
     ALPHA          = config.get('PID_ALPHA', 0.3)   # LPF coefficient: lower=smoother, higher=faster
     INITIAL_PWM    = config.get('GRIP_PWM', -180)   # approach PWM before contact
+    SENSOR_GAIN    = config.get('SENSOR_GAIN', 1.0) # 1.0=original sensor, 0.08=new sensor
 
     TRAIN_BASELINE_G = 0.004369
     TARGET_HZ        = 1.8                          # must match training sampling rate
@@ -147,7 +148,7 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
         if res_k <= 0 or res_k > 800:
             res_k = 800.0
         raw_cond     = 1.0 / (res_k + 1e-6)
-        shifted_cond = (raw_cond - current_sensor_baseline) + TRAIN_BASELINE_G
+        shifted_cond = ((raw_cond - current_sensor_baseline) * SENSOR_GAIN) + TRAIN_BASELINE_G
 
         # ── Dynamic Is_Press detection ───────────────────────────────────────
         if not detected and res_k < threshold_res_k:

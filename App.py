@@ -50,7 +50,7 @@ TARGET_FORCE = 2.5  # แรงเป้าหมาย (N)
 # =====================================================
 PID_KP = 50.0
 PID_KI = 13.0
-PID_KD = 20.0
+PID_KD = 5.0
 # PID_KP = 25.0
 # PID_KI = 13.0
 # PID_KD = 20.0
@@ -61,7 +61,15 @@ PID_KD = 20.0
 #  - alpha = 0.3  -> สมดุล (ค่าเริ่มต้น)
 #  - alpha = 0.9  -> เร็วแต่กระด้าง (เกือบไม่กรอง)
 # =====================================================
-PID_ALPHA = 0.3
+PID_ALPHA = 0.6
+
+# =====================================================
+#  Sensor Gain (Cross-Hardware Compatibility)
+#  - 1.0  -> original training sensor (default)
+#  - 0.08 -> new/replacement sensor (per UPDATE.md)
+#  Applied as: shifted_cond = (delta * SENSOR_GAIN) + TRAIN_BASELINE_G
+# =====================================================
+SENSOR_GAIN = 1.0
 
 # ใน main() เพิ่มลงใน config dict
 
@@ -162,6 +170,7 @@ def main():
     'PID_KI': PID_KI,
     'PID_KD': PID_KD,
     'PID_ALPHA': PID_ALPHA,
+    'SENSOR_GAIN': SENSOR_GAIN,
     }
 
     print()
