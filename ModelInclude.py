@@ -101,9 +101,9 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
         print("  ⚠️  No calibration samples — using 250 kOhm default")
 
     current_sensor_baseline = 1.0 / (baseline_res_k + 1e-6)
-    threshold_res_k         = baseline_res_k * 0.97
+    threshold_res_k         = baseline_res_k * 0.93   # Report 2: 0.97 -> 0.93, ให้ approach กดลึกขึ้นก่อน PID เข้ามา
     print(f"  Baseline  : {baseline_res_k:.2f} kOhm  (G={current_sensor_baseline:.5f})")
-    print(f"  Threshold : {threshold_res_k:.2f} kOhm  (97% of baseline)")
+    print(f"  Threshold : {threshold_res_k:.2f} kOhm  (93% of baseline)")
     print(f"  Train G   : {TRAIN_BASELINE_G:.5f}")
 
     # ── STAGE 3: Begin approach ───────────────────────────────────────────────
@@ -209,6 +209,11 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             #   error < 0  →  pid_output < 0  →  -pid_output > 0  → clipped to 0 (loosen)
             if is_press:
                 target_pwm   = int(np.clip(-pid_output, -255, 0))
+                # ── Grip Floor (Report 2) ────────────────────────────────────
+                # ขณะที่ force < 95% ของ setpoint อย่าให้ PWM อ่อนกว่า -120
+                # บังคับให้ gripper ดันต่อเนื่องจนกว่าจะถึงเป้า แล้ว PID ค่อยปรับละเอียด
+                if force < SETPOINT_FORCE * 0.95:
+                    target_pwm = min(target_pwm, -120)
                 # ── Low-Pass Filter (Alpha Filter) ───────────────────────────
                 # smoothed = target*α + previous*(1-α)
                 # ป้องกัน PWM กระตุก/แกว่ง จากค่า KI=12.5, KD=7 ที่ค่อนข้างสูง

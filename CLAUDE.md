@@ -27,18 +27,27 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 
 ```
 project/
-├── Claude Report               # Claude's self-documentation and research insights
 ├── App.py                      # Entry point: serial comms, CSV logging, user commands
 ├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID
+├── PIDpwm.ino                  # ESP32 firmware (100 Hz sensor stream, PWM commands)
 ├── Analysis2ndSensor.ipynb     # Data pipeline: Feature Engineering & dataset prep for retraining
-└── Model/
-    ├── my_cnn_lstm_model.keras   # Force prediction model
-    ├── scaler_X.pkl              # PowerTransformer for [Conductance, Is_Press]
-    └── scaler_y.pkl              # MinMaxScaler for Force_N target
+├── JupyterPython.ipynb         # Notebook for analysis / model experiments
+├── Tune.py                     # PID auto-tuning helper (sweeps gain combinations)
+├── tes.py                      # Misc test script
+├── Claude Report/              # Claude's diagnostic reports (one .md per iteration)
+├── data_logs/                  # CSV output per grip session (phase1_<timestamp>_<tag>.csv)
+├── Model/
+│   ├── my_cnn_lstm_model.keras # Force prediction model (active)
+│   ├── scaler_X.pkl            # PowerTransformer for [Conductance, Is_Press]
+│   ├── scaler_y.pkl            # MinMaxScaler for Force_N target
+│   └── ModelV1/                # Archived previous-version model + scalers
+├── README.md                   # Public-facing project description
+├── UPDATE.md                   # Latest research-update notes (incl. SENSOR_GAIN spec)
+└── CLAUDE.md                   # This file — authoritative spec for Claude Code
 ```
 
 **Rule:** All grip logic lives in `ModelInclude.py::run_one_grip()`. `App.py` only handles serial setup, CSV file creation, and the user command loop. Do not put grip logic in `App.py`.
-
+**Rule:** After Any Report the file structure may be changed, always update claude.md to reflect the current file structure And report to Claude Report folder.
 ---
 
 ## 3. Hardware & Serial Protocol
@@ -132,7 +141,7 @@ shifted_cond = ((raw_cond - current_sensor_baseline) * SENSOR_GAIN) + TRAIN_BASE
 
 ```python
 # Stage 2: collect 30 samples at PWM=0 → compute baseline_res_k (mean, kΩ)
-threshold_res_k = baseline_res_k * 0.97   # 97% of baseline
+threshold_res_k = baseline_res_k * 0.93   # 93% of baseline (Report 2 tuning)
 
 # Stage 4: per packet
 if not detected and res_k < threshold_res_k:
@@ -226,17 +235,19 @@ All PID parameters live in `App.py` and are passed via `config` dict:
 
 | Constant | Default | Notes |
 |---|---|---|
-| `TARGET_FORCE` | `3.0` N | Setpoint |
-| `PID_KP` | `30.0` | Proportional gain |
-| `PID_KI` | `13.0` | Integral gain |
-| `PID_KD` | `20.0` | Derivative gain |
-| `PID_ALPHA` | `0.3` | Low-pass filter coefficient on PWM output (0=smooth, 1=raw) |
+| `TARGET_FORCE` | `2.5` N | Setpoint |
+| `PID_KP` | `50.0` | Proportional gain |
+| `PID_KI` | `22.0` | Integral gain (Report 2: raised from 13 to overcome PID undergrip) |
+| `PID_KD` | `5.0` | Derivative gain (Report 1: lowered from 20, was backing off too hard) |
+| `PID_ALPHA` | `0.4` | LPF on PWM output (Report 2: tuned down from 0.6 — was bleeding approach pressure too fast) |
 | `SENSOR_GAIN` | `1.0` | Conductance slope scalar; set to `0.08` for new/replacement sensor |
 | `GRIP_PWM` | `−180` | Approach PWM (before contact) |
 | `RELEASE_PWM` | `+200` | Open PWM |
 | `RELEASE_TARGET` | `106.0°` | Home position threshold |
 | `RELEASE_TIMEOUT` | `5.0 s` | Release watchdog |
-| `GRIP_DURATION` | `10.0 s` | Total grip trial duration |
+| `GRIP_DURATION` | `8.0 s` | Total grip trial duration (Report 2: raised from 5s for integral build-up) |
+| Contact threshold | `baseline × 0.93` | Resistance drop required for `is_press` (Report 2: tightened from 0.97 so approach reaches deeper compression) |
+| Grip floor | `target_pwm = min(target_pwm, −120)` while `force < 0.95×setpoint` | Report 2: prevents LPF from bleeding grip below the level needed to reach setpoint |
 
 **Tuning note:** Integral wind-up is prevented by: (a) only accumulating after `is_press=1`, and (b) clamping to `±100`. If steady-state error persists, increase `KI`. If oscillation occurs, reduce `KP` or increase `KD`.
 
@@ -291,7 +302,7 @@ Written by `App.py` (header) and `ModelInclude.py` (rows). One row per sensor pa
 | `TARGET_HZ` | `1.8` | ModelInclude | Must match training data sample rate exactly |
 | `INTERVAL` | `1 / 1.8 ≈ 0.556 s` | ModelInclude | Derived from TARGET_HZ |
 | `maxlen=60` | `60` | ModelInclude | Model input sequence length |
-| `threshold_res_k` | `baseline × 0.97` | ModelInclude | 3% drop = contact detection threshold |
+| `threshold_res_k` | `baseline × 0.93` | ModelInclude | 7% drop = contact detection threshold (Report 2: was 0.97) |
 | Resistance clamp | `0 < res_k ≤ 800 kΩ` | ModelInclude | Suppresses open-circuit spikes |
 | Integral clamp | `±100` | ModelInclude | Anti-windup |
 | PWM clamp | `−255…0` | ModelInclude | Grip direction only; positive = release (handled by Stage 5) |

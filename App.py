@@ -28,7 +28,7 @@ from ModelInclude import run_one_grip # import ฟังก์ชันมา
 # =====================================================
 
 GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
-GRIP_DURATION = 5.0    # เวลาบีบ (วินาที)
+GRIP_DURATION = 8.0    # เวลาบีบ (วินาที) — Report 2: เพิ่มเวลาให้ integral สะสมพอ
 RELEASE_PWM = 200     # PWM ตอนคลาย
 RELEASE_TARGET = 106.0 # ปล่อยจนองศากลับถึงค่านี้ (home ~151.5 deg, เผื่อ margin 3.5 deg)
 RELEASE_TIMEOUT = 5.0 # timeout คลาย (วินาที) — เพิ่มเป็น 12s ป้องกัน timeout หลัง grip นาน
@@ -49,7 +49,7 @@ TARGET_FORCE = 2.5  # แรงเป้าหมาย (N)
 #                                          (ต้องคู่กับ LPF)
 # =====================================================
 PID_KP = 50.0
-PID_KI = 13.0
+PID_KI = 22.0    # Report 2: 13 -> 22, สะสม integral แรงขึ้นเพื่อดัน steady-state PWM ลึกกว่าเดิม
 PID_KD = 5.0
 # PID_KP = 25.0
 # PID_KI = 13.0
@@ -61,7 +61,7 @@ PID_KD = 5.0
 #  - alpha = 0.3  -> สมดุล (ค่าเริ่มต้น)
 #  - alpha = 0.9  -> เร็วแต่กระด้าง (เกือบไม่กรอง)
 # =====================================================
-PID_ALPHA = 0.6
+PID_ALPHA = 0.4   # Report 2: 0.6 -> 0.4, อย่าให้ LPF bleed approach pressure เร็วเกินไป
 
 # =====================================================
 #  Sensor Gain (Cross-Hardware Compatibility)
