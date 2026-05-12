@@ -17,7 +17,8 @@ Two AI models are being developed:
 | Goal | Model | Status |
 |---|---|---|
 | **Force Prediction** | CNN-LSTM regression | ✅ Active — used in PID loop |
-| **Material Classification** | 1D-CNN (Hard / Medium / Soft) | 🔲 Planned — data collection phase |
+| **Material Classification (Phase A)** | Random Forest (5 hand-crafted features) | ✅ Active — runs post-grip; **v2 (2026-05-11): 0.936 ± 0.042 5-fold CV / 0.714 field (78 train + 70 verif trials)**. Residual Hard/Medium error tracked in Issue 8 (baseline clamping) and Issue 9 (PID-overshoot feature overlap). |
+| **Material Classification (Phase B)** | 1D-CNN (40, 5) at 20 Hz | 🟡 Architecture locked — awaiting probe-phase data |
 
 The running system (`App.py` + `ModelInclude.py`) does **closed-loop force control**: the CNN-LSTM predicts grip force from the tactile sensor, and a PID controller adjusts motor PWM to hold a target force.
 
@@ -27,27 +28,52 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 
 ```
 project/
-├── App.py                      # Entry point: serial comms, CSV logging, user commands
-├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID
-├── PIDpwm.ino                  # ESP32 firmware (100 Hz sensor stream, PWM commands)
-├── Analysis2ndSensor.ipynb     # Data pipeline: Feature Engineering & dataset prep for retraining
-├── JupyterPython.ipynb         # Notebook for analysis / model experiments
-├── Tune.py                     # PID auto-tuning helper (sweeps gain combinations)
-├── tes.py                      # Misc test script
+├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification
+├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID; returns trial dict
+├── MaterialClassifier.py       # Phase A (RF) runtime inference; loads Model/material_rf.pkl
 ├── Claude Report/              # Claude's diagnostic reports (one .md per iteration)
+│   ├── Issue Report/           # Open issues and architectural concerns (one .md per issue) — cleared each `today` run
+│   ├── DevLog/                 # Change Report (When AI change something in code it must update here) — cleared each `today` run
+│   ├── Update Report/          # Accepted fix/improvement summaries
+│   ├── Daily Report/           # Combined daily archives (Daily Report YYYY-MM-DD.md)
+│   └── Open Issues YYYY-MM-DD.md  # End-of-day open-issues snapshot, written by `today` clear protocol
+├── Code Store/                 # Archived/reference code + offline trainers
+│   ├── train_material_rf.py    # Phase A trainer (offline; saves Model/material_rf.pkl + scaler)
+│   ├── inspect_material_data.py# Per-trial QC dump for ongoing data quality audits
+│   └── (Analysis2ndSensor.ipynb, PIDpwm.ino, Tune.py, ...)
 ├── data_logs/                  # CSV output per grip session (phase1_<timestamp>_<tag>.csv)
+│   ├── Bin/                    # Archived/old session logs
+│   ├── May/                    # Current session logs by month
+│   ├── Hard.csv / Medium.csv / Soft (1).csv / Soft (2).csv  # Labelled training CSVs (Phase A source)
+│   └── Prediction/             # Live prediction-mode session captures by class
+│       ├── Hard/  Medium/  Soft/   # phase1_<ts>.csv + phase1_<ts>_summary.csv per session
 ├── Model/
 │   ├── my_cnn_lstm_model.keras # Force prediction model (active)
 │   ├── scaler_X.pkl            # PowerTransformer for [Conductance, Is_Press]
 │   ├── scaler_y.pkl            # MinMaxScaler for Force_N target
+│   ├── material_rf.pkl         # Phase A material classifier (RandomForest, 5 features)
+│   ├── scaler_mat_rf.pkl       # StandardScaler for material classifier features
+│   ├── Train/                  # Training notebook (CNNLstm.ipynb) and processed datasets
 │   └── ModelV1/                # Archived previous-version model + scalers
-├── README.md                   # Public-facing project description
-├── UPDATE.md                   # Latest research-update notes (incl. SENSOR_GAIN spec)
+├── Research/                   # Article-quality artefacts (benchmarks, baselines)
+│   └── material_classifier_RF_baseline_2026-05-09.md
+├── .claude/
+│   ├── settings.local.json
+│   └── skills/
+│       └── Skill.md            # Project management rules (report lifecycle, git workflow, trigger words)
+├── bin/                        # Archived scripts and backup files
+├── README.md                   # All about current project
 └── CLAUDE.md                   # This file — authoritative spec for Claude Code
 ```
 
 **Rule:** All grip logic lives in `ModelInclude.py::run_one_grip()`. `App.py` only handles serial setup, CSV file creation, and the user command loop. Do not put grip logic in `App.py`.
 **Rule:** After Any Report the file structure may be changed, always update claude.md to reflect the current file structure And report to Claude Report folder.
+**Rule:** When User command `today` → accept all Update Reports, combine every report from today into one file under `Claude Report/Daily Report/`, clear all other files in `Claude Report/` (Issue Report, DevLog, Update Report), write a remaining open-issues file, and if any mandatory research-article data was collected today add it to the `Research/` directory.
+**Rule:** When User command `code is clear` and report is finished → git force-merge branch `fix/force-control` into `main`.
+**Rule:** When GitHub push is needed before a code change → commit and push current work to `main` first, then apply the new code changes.
+**Rule:** When User ask for Update Report claude must open report with Status Under Review at Claude Report/folder, After User accept it, claude must change the status to Accepted and move the report to `Claude Report/Update Report/` folder.
+**Rule:** When user command `Issue N Review` where N is the issue number, claude must update the issue report with Status Review, After User accept it, claude must Revise Issue Report and move it to `Claude Report/Update Report/` folder, and close Issue N. and Update the status of Issue N to Accepted.
+**Rule:** When user command `Apply [Any Report]` claude must apply the changes in the code and update the report to Status Accepted, And always update Implementation Sequence in Update Report. always update claude.md to reflect the current file structure.
 ---
 
 ## 3. Hardware & Serial Protocol
@@ -331,7 +357,7 @@ Written by `App.py` (header) and `ModelInclude.py` (rows). One row per sensor pa
 
 Phase 1 and Phase 2 use the same `App.py`. The difference is whether the model is loaded and PID is active (always active when `Model/` files are present) versus the experiment being run purely for CSV data capture.
 
-`Analysis2ndSensor.ipynb` handles the data pipeline between phases: it takes Phase 1 CSVs, applies feature engineering (`shifted_cond`, `is_press`), and produces a dataset ready for model retraining or evaluation.
+`Code Store/Analysis2ndSensor.ipynb` handles the data pipeline between phases: it takes Phase 1 CSVs, applies feature engineering (`shifted_cond`, `is_press`), and produces a dataset ready for model retraining or evaluation. The training notebook lives at `Model/Train/CNNLstm.ipynb`.
 
 ---
 

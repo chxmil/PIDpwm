@@ -23,17 +23,24 @@ from collections import deque
 from typing import Optional
 from ModelInclude import run_one_grip # import ฟังก์ชันมา
 
+# Material classifier — Phase A (RF) per Update_2026-05-09_Material Classifier Plan §4.
+# Post-grip classification only; does not touch grip logic in ModelInclude.py.
+try:
+    from MaterialClassifier import classify_trial as _classify_trial
+except Exception as _e:
+    _classify_trial = None
+    print(f"[App] MaterialClassifier unavailable ({_e}); classification disabled.")
+
 # =====================================================
 #  ตัวแปรกำหนดเอง — แก้ตรงนี้
 # =====================================================
 
-GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
 GRIP_DURATION = 8.0    # เวลาบีบ (วินาที) — Report 2: เพิ่มเวลาให้ integral สะสมพอ
 RELEASE_PWM = 200     # PWM ตอนคลาย
 RELEASE_TARGET = 106.0 # ปล่อยจนองศากลับถึงค่านี้ (home ~151.5 deg, เผื่อ margin 3.5 deg)
 RELEASE_TIMEOUT = 5.0 # timeout คลาย (วินาที) — เพิ่มเป็น 12s ป้องกัน timeout หลัง grip นาน
 # App.py
-TARGET_FORCE = 2.5  # แรงเป้าหมาย (N)
+
 
 
 # =====================================================
@@ -48,12 +55,25 @@ TARGET_FORCE = 2.5  # แรงเป้าหมาย (N)
 #  ค่าใหม่ : KP=30.0, KI=12.5, KD=7     -> เร็วขึ้น + damped
 #                                          (ต้องคู่กับ LPF)
 # =====================================================
-PID_KP = 50.0
-PID_KI = 22.0    # Report 2: 13 -> 22, สะสม integral แรงขึ้นเพื่อดัน steady-state PWM ลึกกว่าเดิม
-PID_KD = 5.0
-# PID_KP = 25.0
-# PID_KI = 13.0
-# PID_KD = 20.0
+TARGET_FORCE = 3.5  # แรงเป้าหมาย (N)
+GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
+PID_KP = 70.0
+PID_KI = 20.0    # Report 2: 13 -> 22, สะสม integral แรงขึ้นเพื่อดัน steady-state PWM ลึกกว่าเดิม
+PID_KD = 7.0
+
+# -----------------------------------------------------
+#PID Set Up based on TARGET_FORCE
+# If TARGET_FORCE = 3.5  # แรงเป้าหมาย (N)
+# GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
+# PID_KP = 70.0
+# PID_KI = 22.0    # Report 2: 13 -> 22, สะสม integral แรงขึ้นเพื่อดัน steady-state PWM ลึกกว่าเดิม
+# PID_KD = 10.0
+
+# If TARGET_FORCE = 3.5  # แรงเป้าหมาย (N)
+#GRIP_PWM = -180         # PWM บีบ (ส่งค่านี้ทีเดียวเลย)
+# PID_KP = 70.0
+# PID_KI = 20.0    # Report 2: 13 -> 22, สะสม integral แรงขึ้นเพื่อดัน steady-state PWM ลึกกว่าเดิม
+# PID_KD = 7.0
 # -----------------------------------------------------
 #  Low-Pass Filter (Alpha Filter) บนเอาต์พุต PWM
 #  - ช่วยกรองสัญญาณ PWM ที่กระตุกจาก KI/KD สูง
@@ -151,6 +171,40 @@ class SerialPort:
             self.ser.close()
 
 
+def _post_grip_classify(result, loop_idx, material_label, tag, summary_writer, summary_file):
+    """Run material classification on a finished grip and write the summary row.
+
+    Always writes a summary row (even if classifier disabled) so the file
+    has one row per trial, matching the main CSV's loop_index series.
+    """
+    label, probs = (None, None)
+    if _classify_trial is not None:
+        try:
+            label, probs = _classify_trial(result["trial_records"], result["baseline_res_k"])
+        except Exception as e:
+            print(f"  [classify] error: {e}")
+    if label is not None:
+        ph = probs.get("Hard",   "") if probs else ""
+        pm = probs.get("Medium", "") if probs else ""
+        ps = probs.get("Soft",   "") if probs else ""
+        print(f"  Material prediction: {label}  "
+              f"(Hard={ph if ph=='' else f'{ph:.2f}'}  "
+              f"Medium={pm if pm=='' else f'{pm:.2f}'}  "
+              f"Soft={ps if ps=='' else f'{ps:.2f}'})")
+    else:
+        ph = pm = ps = ""
+
+    summary_writer.writerow([
+        loop_idx, material_label, tag,
+        label or "", ph, pm, ps,
+        f"{result['max_force']:.4f}",
+        int(result["contact_detected"]),
+        f"{result['baseline_res_k']:.4f}",
+        result["pkt_count"],
+    ])
+    summary_file.flush()
+
+
 def main():
     p = argparse.ArgumentParser(description="Phase 1 v2: Gripper Loop Collector")
     p.add_argument('--port', default='COM18')
@@ -202,6 +256,17 @@ def main():
         "train_baseline_g", "sensor_baseline_g", "shifted_cond", "is_press", "pred_force_n", "pid_pwm_out"
     ])
     print(f"  CSV: {csv_path}")
+
+    # Per-trial summary CSV (one row per grip; written after release if classifier available)
+    summary_path = os.path.join(args.log_dir, f"phase1_{ts}{suffix}_summary.csv")
+    summary_file = open(summary_path, 'w', newline='')
+    summary_writer = csv.writer(summary_file)
+    summary_writer.writerow([
+        "loop_index", "material_label", "tag",
+        "pred_material", "prob_Hard", "prob_Medium", "prob_Soft",
+        "max_force_n", "contact_detected", "baseline_res_k", "pkt_count",
+    ])
+    print(f"  Summary CSV: {summary_path}")
 
     # Verify sensor data
     print("  Checking sensor data...", end="", flush=True)
@@ -276,9 +341,11 @@ def main():
                 print(f"  LOOP {loop_idx}")
                 print(f"{'='*40}")
 
-                n = run_one_grip(ser, loop_idx, csv_writer, material, args.tag, parse_sensor, config, prefill_buffer)
+                result = run_one_grip(ser, loop_idx, csv_writer, material, args.tag, parse_sensor, config, prefill_buffer)
+                n = result["pkt_count"]
                 total_pkts += n
                 csv_file.flush()
+                _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file)
                 # Clear buffer so next grip pre-fills with fresh post-release data (new baseline drift)
                 prefill_buffer.clear()
 
@@ -302,9 +369,11 @@ def main():
                     print(f"  AUTO LOOP {loop_idx}")
                     print(f"{'='*40}")
 
-                    n = run_one_grip(ser, loop_idx, csv_writer, material, args.tag, parse_sensor, config, prefill_buffer)
+                    result = run_one_grip(ser, loop_idx, csv_writer, material, args.tag, parse_sensor, config, prefill_buffer)
+                    n = result["pkt_count"]
                     total_pkts += n
                     csv_file.flush()
+                    _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file)
                     prefill_buffer.clear()
 
                     print(f"  AUTO LOOP {loop_idx} DONE ({n} pkts)")
@@ -332,8 +401,10 @@ def main():
     # Cleanup
     ser.close()
     csv_file.close()
+    summary_file.close()
     print(f"\n  Done: {loop_idx} loops, {total_pkts} packets")
     print(f"  CSV: {csv_path}")
+    print(f"  Summary: {summary_path}")
 
 
 if __name__ == "__main__":

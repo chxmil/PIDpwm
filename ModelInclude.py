@@ -122,6 +122,7 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     pkt_count  = 0
     last_infer = grip_start
     max_force  = 0.0
+    records    = []   # per-packet trace for post-grip material classification
 
     # ── Low-Pass Filter state ────────────────────────────────────────────────
     # smoothed_pwm = (target_pwm * ALPHA) + (smoothed_pwm * (1 - ALPHA))
@@ -161,6 +162,14 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             print(f"\n  [CONTACT] t={t_ms} ms  R={res_k:.2f} kOhm — PID engaged")
 
         data_buffer.append([shifted_cond, float(is_press)])
+
+        records.append({
+            "t_ms":         t_ms,
+            "pos":          d['pos'],
+            "res":          d['res'],
+            "is_press":     int(is_press),
+            "pred_force_n": float(last_force),
+        })
 
         # ── CSV: every packet; current_pwm = what was last sent ──────────────
         if writer:
@@ -291,4 +300,11 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     print("  [SETTLE] 0.5s")
     ser.drain(0.5)
     ser.write("PWM:0")
-    return pkt_count
+
+    return {
+        "pkt_count":        pkt_count,
+        "trial_records":    records,
+        "baseline_res_k":   baseline_res_k,
+        "max_force":        max_force,
+        "contact_detected": detected,
+    }

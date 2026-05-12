@@ -43,7 +43,7 @@
 #define POT_DEG_MAX    180.0f
 
 // Timing
-#define SENSOR_INTERVAL_US  10000   // 10ms = 100Hz
+#define SENSOR_INTERVAL_US  20000   // 20ms = 50Hz (Issue 7: was 10ms; ADS1115 at 128SPS needs more loop time)
 // Watchdog removed — PC controls motor directly
 
 // ===================== Globals =============================
@@ -94,7 +94,7 @@ void setup() {
   if (ads.begin()) {
     adsReady = true;
     ads.setGain(GAIN_ONE);
-    ads.setDataRate(RATE_ADS1115_860SPS);
+    ads.setDataRate(RATE_ADS1115_128SPS);   // Issue 7 H2: was 860SPS; 128SPS gives S/H time to acquire AIN1 through ~226k source impedance
   } else {
     Serial.println("ERR:ADS_NOT_FOUND");
   }
@@ -103,6 +103,21 @@ void setup() {
   ledcAttach(MOTOR_IN1, PWM_FREQ, PWM_RESOLUTION);
   ledcAttach(MOTOR_IN2, PWM_FREQ, PWM_RESOLUTION);
   stopMotor();
+
+  // Issue 7 boot self-test: read AIN1 once at idle, print computed R.
+  // Operator can spot-check ADC chain matches multimeter without opening a CSV.
+  if (adsReady) {
+    delay(50);
+    int16_t self_v = ads.readADC_SingleEnded(1);
+    float vout = self_v * 0.000125f;
+    float r_k  = (vout > 0 && vout < VIN) ? (R_FIXED * vout / (VIN - vout)) / 1000.0f : -1.0f;
+    Serial.print("I:CALIB,adc1=");
+    Serial.print(self_v);
+    Serial.print(",Vout=");
+    Serial.print(vout, 3);
+    Serial.print(",R_kohm=");
+    Serial.println(r_k, 1);
+  }
 
   Serial.println("READY");
 }
@@ -148,6 +163,8 @@ void loop() {
       position = mapFloat((float)adc0_raw, POT_ADC_MIN, POT_ADC_MAX,
                           POT_DEG_MIN, POT_DEG_MAX);
       position = constrain(position, POT_DEG_MIN, POT_DEG_MAX);
+
+      delayMicroseconds(200);   // Issue 7 H2: AIN1 mux + S/H settle through high-Z source
 
       // Ch1: Voltage Divider → Resistance (เหมือน Debug)
       adc1_raw = ads.readADC_SingleEnded(1);
