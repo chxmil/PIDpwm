@@ -136,12 +136,12 @@ CLAUDE.md §2 file structure remains accurate (only §1 model-status line was up
 
 Field-verification sessions logged in `data_logs/`:
 
-| File pair | Class | Trials | Field accuracy |
-|---|---|---|---|
-| NewModel (1).csv + (2).csv | Soft   | 35 | 1.000 |
-| NewModel (4).csv + (5).csv | Medium | 25 | 0.520 |
-| NewModel (3).csv (summary only) | Hard | 10 | 0.200 |
-| NewModel (6).csv | (aborted — material=NaN) | 10 | — |
+| File pair                             | Class             | Trials | Field accuracy |
+|---------------------------------------|-------------------|--------|----------------|
+| NewModel (1).csv + (2).csv            | Soft              | 35     | 1.000          |
+| NewModel (4).csv + (5).csv            | Medium            | 25     | 0.520          |
+| NewModel (3).csv (summary only)       | Hard              | 10     | 0.200          |
+| NewModel (6).csv                      |                   | 10     |                |
 
 Training-set CSVs from the same day:
 - `phase1_20260511_153751.csv` + `_summary.csv` — Hard, 29 trials, 26 kept after quality filter.

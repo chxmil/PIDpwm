@@ -31,6 +31,23 @@ except Exception as _e:
     _classify_trial = None
     print(f"[App] MaterialClassifier unavailable ({_e}); classification disabled.")
 
+# Material classifier — Phase B (1D-CNN) per Update_2026-05-13_1D-CNN Phase B Plan §1.5.
+# Runs on Stage 2.5 probe records; coexists with RF until A/B verification picks a winner.
+try:
+    from MaterialCNNClassifier import classify_probe as _classify_probe
+except Exception as _e:
+    _classify_probe = None
+    print(f"[App] MaterialCNNClassifier unavailable ({_e}); CNN classification disabled.")
+
+# Material classifier — Phase A-prime (1D-CNN on PID-grip data) per
+# DevLog_2026-05-13_Phase A-prime §8. Runs on trial_records (post-contact PID trace);
+# coexists with RF and probe-CNN. CV 0.942 on 260 trials (vs RF v4 0.838).
+try:
+    from MaterialPIDCNNClassifier import classify_pid as _classify_pid
+except Exception as _e:
+    _classify_pid = None
+    print(f"[App] MaterialPIDCNNClassifier unavailable ({_e}); CNN-PID classification disabled.")
+
 # =====================================================
 #  ตัวแปรกำหนดเอง — แก้ตรงนี้
 # =====================================================
@@ -90,6 +107,16 @@ PID_ALPHA = 0.4   # Report 2: 0.6 -> 0.4, อย่าให้ LPF bleed approa
 #  Applied as: shifted_cond = (delta * SENSOR_GAIN) + TRAIN_BASELINE_G
 # =====================================================
 SENSOR_GAIN = 1.0
+
+# =====================================================
+#  Probe Phase (Stage 2.5) — Phase B 1D-CNN material classifier
+#  Slow constant-velocity press BEFORE PID engages.
+#  Captures a (40, 5) tensor at 20 Hz aligned to first contact.
+#  Per Update_2026-05-13_1D-CNN Phase B Plan §1.1.
+# =====================================================
+PROBE_PWM_START = -80      # ramp start (gentle approach)
+PROBE_PWM_END   = -150     # ramp end (firm enough for Hard to register)
+PROBE_DURATION  = 2.0      # seconds — ramp duration; window length matches at 20 Hz × 40 samples
 
 # ใน main() เพิ่มลงใน config dict
 
@@ -171,38 +198,74 @@ class SerialPort:
             self.ser.close()
 
 
-def _post_grip_classify(result, loop_idx, material_label, tag, summary_writer, summary_file):
-    """Run material classification on a finished grip and write the summary row.
+def _classify_one(classifier_fn, records, baseline_res_k, kind):
+    """Invoke a classifier callable; return (label, probs_dict) or (None, None) on error/disabled."""
+    if classifier_fn is None or not records:
+        return None, None
+    try:
+        return classifier_fn(records, baseline_res_k)
+    except Exception as e:
+        print(f"  [classify-{kind}] error: {e}")
+        return None, None
 
-    Always writes a summary row (even if classifier disabled) so the file
+
+def _post_grip_classify(result, loop_idx, material_label, tag, summary_writer, summary_file,
+                        probe_writer=None, probe_file=None):
+    """Run RF + CNN material classification on a finished grip and write the summary row.
+
+    Always writes a summary row (even if both classifiers are disabled) so the file
     has one row per trial, matching the main CSV's loop_index series.
     """
-    label, probs = (None, None)
-    if _classify_trial is not None:
-        try:
-            label, probs = _classify_trial(result["trial_records"], result["baseline_res_k"])
-        except Exception as e:
-            print(f"  [classify] error: {e}")
-    if label is not None:
-        ph = probs.get("Hard",   "") if probs else ""
-        pm = probs.get("Medium", "") if probs else ""
-        ps = probs.get("Soft",   "") if probs else ""
-        print(f"  Material prediction: {label}  "
-              f"(Hard={ph if ph=='' else f'{ph:.2f}'}  "
-              f"Medium={pm if pm=='' else f'{pm:.2f}'}  "
-              f"Soft={ps if ps=='' else f'{ps:.2f}'})")
-    else:
-        ph = pm = ps = ""
+    rf_label, rf_probs = _classify_one(_classify_trial, result["trial_records"],
+                                       result["baseline_res_k"], "rf")
+    cnn_label, cnn_probs = _classify_one(_classify_probe, result.get("probe_records", []),
+                                         result["baseline_res_k"], "cnn")
+    pid_label, pid_probs = _classify_one(_classify_pid, result["trial_records"],
+                                         result["baseline_res_k"], "cnn-pid")
+
+    def _pp(probs, k):
+        if not probs:
+            return ""
+        v = probs.get(k)
+        return "" if v is None else f"{v:.2f}"
+
+    rf_h, rf_m, rf_s = _pp(rf_probs,  "Hard"), _pp(rf_probs,  "Medium"), _pp(rf_probs,  "Soft")
+    cn_h, cn_m, cn_s = _pp(cnn_probs, "Hard"), _pp(cnn_probs, "Medium"), _pp(cnn_probs, "Soft")
+    pd_h, pd_m, pd_s = _pp(pid_probs, "Hard"), _pp(pid_probs, "Medium"), _pp(pid_probs, "Soft")
+
+    if rf_label or cnn_label or pid_label:
+        rf_str  = f"RF={rf_label or '-'}({rf_h}/{rf_m}/{rf_s})"
+        pid_str = f"CNN-PID={pid_label or '-'}({pd_h}/{pd_m}/{pd_s})"
+        cnn_str = f"CNN-probe={cnn_label or '-'}({cn_h}/{cn_m}/{cn_s})"
+        print(f"  Material prediction:  {rf_str}   {pid_str}   {cnn_str}")
 
     summary_writer.writerow([
         loop_idx, material_label, tag,
-        label or "", ph, pm, ps,
+        rf_label  or "", rf_h, rf_m, rf_s,
+        pid_label or "", pd_h, pd_m, pd_s,
+        cnn_label or "", cn_h, cn_m, cn_s,
         f"{result['max_force']:.4f}",
         int(result["contact_detected"]),
         f"{result['baseline_res_k']:.4f}",
         result["pkt_count"],
+        len(result.get("probe_records", [])),
     ])
     summary_file.flush()
+
+    # Write probe CSV — one row per probe timestep, all trials concatenated
+    if probe_writer is not None:
+        for step_idx, r in enumerate(result.get("probe_records", [])):
+            probe_writer.writerow([
+                loop_idx, step_idx, r["t_ms"],
+                material_label, tag,
+                f"{r['shifted_cond']:.6f}",
+                f"{r['delta_pos']:.4f}",
+                f"{r['d_cond_dt']:.6f}",
+                f"{r['d_dpos_dt']:.4f}",
+                f"{r['res_norm']:.4f}",
+            ])
+        if probe_file is not None and result.get("probe_records"):
+            probe_file.flush()
 
 
 def main():
@@ -211,6 +274,8 @@ def main():
     p.add_argument('--material', default='')
     p.add_argument('--tag', default='')
     p.add_argument('--log-dir', default='data_logs')
+    p.add_argument('--probe', action='store_true',
+                   help='Enable Stage 2.5 probe phase (Phase B 1D-CNN data + live CNN inference).')
     args = p.parse_args()
 
     config = {
@@ -225,6 +290,10 @@ def main():
     'PID_KD': PID_KD,
     'PID_ALPHA': PID_ALPHA,
     'SENSOR_GAIN': SENSOR_GAIN,
+    'PROBE_ENABLED':   args.probe,
+    'PROBE_PWM_START': PROBE_PWM_START,
+    'PROBE_PWM_END':   PROBE_PWM_END,
+    'PROBE_DURATION':  PROBE_DURATION,
     }
 
     print()
@@ -263,10 +332,29 @@ def main():
     summary_writer = csv.writer(summary_file)
     summary_writer.writerow([
         "loop_index", "material_label", "tag",
-        "pred_material", "prob_Hard", "prob_Medium", "prob_Soft",
+        "pred_material_rf",     "prob_Hard_rf",     "prob_Medium_rf",     "prob_Soft_rf",
+        "pred_material_cnnpid", "prob_Hard_cnnpid", "prob_Medium_cnnpid", "prob_Soft_cnnpid",
+        "pred_material_cnn",    "prob_Hard_cnn",    "prob_Medium_cnn",    "prob_Soft_cnn",
         "max_force_n", "contact_detected", "baseline_res_k", "pkt_count",
+        "probe_len",
     ])
     print(f"  Summary CSV: {summary_path}")
+
+    # Probe CSV (Phase B training corpus; one row per probe timestep, all trials concatenated)
+    probe_writer = None
+    probe_file   = None
+    if args.probe:
+        probe_dir  = os.path.join(args.log_dir, "datasets", "probe")
+        os.makedirs(probe_dir, exist_ok=True)
+        probe_path = os.path.join(probe_dir, f"phase1_{ts}{suffix}_probe.csv")
+        probe_file = open(probe_path, 'w', newline='')
+        probe_writer = csv.writer(probe_file)
+        probe_writer.writerow([
+            "loop_index", "step_idx", "t_ms",
+            "material", "tag",
+            "shifted_cond", "delta_pos", "d_cond_dt", "d_dpos_dt", "res_norm",
+        ])
+        print(f"  Probe CSV : {probe_path}")
 
     # Verify sensor data
     print("  Checking sensor data...", end="", flush=True)
@@ -345,7 +433,8 @@ def main():
                 n = result["pkt_count"]
                 total_pkts += n
                 csv_file.flush()
-                _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file)
+                _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file,
+                                    probe_writer=probe_writer, probe_file=probe_file)
                 # Clear buffer so next grip pre-fills with fresh post-release data (new baseline drift)
                 prefill_buffer.clear()
 
@@ -373,7 +462,8 @@ def main():
                     n = result["pkt_count"]
                     total_pkts += n
                     csv_file.flush()
-                    _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file)
+                    _post_grip_classify(result, loop_idx, material, args.tag, summary_writer, summary_file,
+                                    probe_writer=probe_writer, probe_file=probe_file)
                     prefill_buffer.clear()
 
                     print(f"  AUTO LOOP {loop_idx} DONE ({n} pkts)")
@@ -396,12 +486,14 @@ def main():
             else:
                 print(f"  Unknown: {cmd}")
 
-        time.sleep(0.05)
+        time.sleep(0.05) 
 
     # Cleanup
     ser.close()
     csv_file.close()
     summary_file.close()
+    if probe_file is not None:
+        probe_file.close()
     print(f"\n  Done: {loop_idx} loops, {total_pkts} packets")
     print(f"  CSV: {csv_path}")
     print(f"  Summary: {summary_path}")

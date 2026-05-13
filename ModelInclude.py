@@ -106,6 +106,110 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     print(f"  Threshold : {threshold_res_k:.2f} kOhm  (93% of baseline)")
     print(f"  Train G   : {TRAIN_BASELINE_G:.5f}")
 
+    # ── STAGE 2.5: Probe phase (optional — Phase B 1D-CNN material classifier) ─
+    # Slow constant-velocity press BEFORE PID engages. Captures the dynamic
+    # force-deformation signature uncontaminated by PID overshoot.
+    # Plan: Update_2026-05-13_1D-CNN Phase B Plan.md §1.1 / §1.2.
+    probe_records = []
+    if config.get("PROBE_ENABLED", False):
+        PROBE_PWM_START = int(config.get("PROBE_PWM_START", -80))
+        PROBE_PWM_END   = int(config.get("PROBE_PWM_END",  -150))
+        PROBE_DURATION  = float(config.get("PROBE_DURATION", 2.0))   # seconds, ramp duration
+        PROBE_BIN_S     = 0.050                                       # 50 ms → 20 Hz
+        PROBE_LEN       = 40                                          # samples
+        PROBE_TIMEOUT_S = PROBE_DURATION + 2.0                        # bail if no contact
+
+        print(f"\n[STAGE 2.5] PROBE — PWM {PROBE_PWM_START} → {PROBE_PWM_END} over {PROBE_DURATION:.1f}s "
+              f"(target 40 samples @ 20 Hz from first contact)")
+
+        probe_start    = time.perf_counter()
+        last_pwm_send  = probe_start
+        ser.write(f"PWM:{PROBE_PWM_START}")
+
+        contact_seen     = False
+        pos_at_contact   = None
+        prev_cond        = None
+        prev_dpos        = None
+        bin_packets      = []   # accumulate raw packets for current 50 ms bin
+        bin_start        = None
+
+        while True:
+            elapsed = time.perf_counter() - probe_start
+
+            # Linear PWM ramp; hold end value if elapsed > ramp duration
+            frac      = min(elapsed / PROBE_DURATION, 1.0)
+            target_pwm_probe = int(round(PROBE_PWM_START + frac * (PROBE_PWM_END - PROBE_PWM_START)))
+
+            if time.perf_counter() - last_pwm_send >= 0.05:
+                ser.write(f"PWM:{target_pwm_probe}")
+                last_pwm_send = time.perf_counter()
+
+            if elapsed >= PROBE_TIMEOUT_S:
+                break
+
+            line = ser.readline()
+            if not line:
+                time.sleep(0.001)
+                continue
+            d = parse_sensor(line)
+            if not d:
+                continue
+
+            res_k = d['res'] / 1000.0
+            if res_k <= 0 or res_k > 800:
+                res_k = 800.0
+            raw_cond     = 1.0 / (res_k + 1e-6)
+            shifted_cond = ((raw_cond - current_sensor_baseline) * SENSOR_GAIN) + TRAIN_BASELINE_G
+
+            # Contact detection — same threshold as PID's is_press latch
+            if not contact_seen and res_k < threshold_res_k:
+                contact_seen   = True
+                pos_at_contact = d['pos']
+                bin_start      = time.perf_counter()
+                print(f"\n  [PROBE-CONTACT] t={int(elapsed*1000)} ms  R={res_k:.2f} kOhm")
+
+            if not contact_seen:
+                continue
+
+            bin_packets.append({
+                "shifted_cond": shifted_cond,
+                "pos_deg":      d['pos'],
+                "res_k":        res_k,
+            })
+
+            # Emit one feature row per 50 ms bin
+            if time.perf_counter() - bin_start >= PROBE_BIN_S:
+                if bin_packets:
+                    mean_cond = float(np.mean([p["shifted_cond"] for p in bin_packets]))
+                    mean_pos  = float(np.mean([p["pos_deg"]      for p in bin_packets]))
+                    mean_res  = float(np.mean([p["res_k"]        for p in bin_packets]))
+                    delta_pos = mean_pos - pos_at_contact
+                    d_cond_dt = (mean_cond - prev_cond) / PROBE_BIN_S if prev_cond is not None else 0.0
+                    d_dpos_dt = (delta_pos - prev_dpos) / PROBE_BIN_S if prev_dpos is not None else 0.0
+                    res_norm  = float(np.clip(mean_res / max(baseline_res_k, 1e-6), 0.0, 1.5))
+                    probe_records.append({
+                        "t_ms":        int((time.perf_counter() - probe_start) * 1000),
+                        "shifted_cond": mean_cond,
+                        "delta_pos":    delta_pos,
+                        "d_cond_dt":    d_cond_dt,
+                        "d_dpos_dt":    d_dpos_dt,
+                        "res_norm":     res_norm,
+                    })
+                    prev_cond = mean_cond
+                    prev_dpos = delta_pos
+                bin_packets = []
+                bin_start   = time.perf_counter()
+
+            if len(probe_records) >= PROBE_LEN:
+                break
+
+        print(f"  Probe captured {len(probe_records)}/{PROBE_LEN} samples  "
+              f"(contact={'YES' if contact_seen else 'NO'})")
+
+        # Bridge to Stage 3 — drop PWM briefly so the approach starts from a known state
+        ser.write("PWM:0")
+        time.sleep(0.05)
+
     # ── STAGE 3: Begin approach ───────────────────────────────────────────────
     # Apply INITIAL_PWM so gripper starts closing.
     # PID takes full authority once contact is detected (is_press → 1).
@@ -169,6 +273,7 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
             "res":          d['res'],
             "is_press":     int(is_press),
             "pred_force_n": float(last_force),
+            "shifted_cond": shifted_cond,
         })
 
         # ── CSV: every packet; current_pwm = what was last sent ──────────────
@@ -304,6 +409,7 @@ def run_one_grip(ser, loop_idx, writer, material, tag, parse_sensor, config, pre
     return {
         "pkt_count":        pkt_count,
         "trial_records":    records,
+        "probe_records":    probe_records,
         "baseline_res_k":   baseline_res_k,
         "max_force":        max_force,
         "contact_detected": detected,

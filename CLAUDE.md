@@ -17,8 +17,9 @@ Two AI models are being developed:
 | Goal | Model | Status |
 |---|---|---|
 | **Force Prediction** | CNN-LSTM regression | ✅ Active — used in PID loop |
-| **Material Classification (Phase A)** | Random Forest (5 hand-crafted features) | ✅ Active — runs post-grip; **v2 (2026-05-11): 0.936 ± 0.042 5-fold CV / 0.714 field (78 train + 70 verif trials)**. Residual Hard/Medium error tracked in Issue 8 (baseline clamping) and Issue 9 (PID-overshoot feature overlap). |
-| **Material Classification (Phase B)** | 1D-CNN (40, 5) at 20 Hz | 🟡 Architecture locked — awaiting probe-phase data |
+| **Material Classification (Phase A)** | Random Forest (5 hand-crafted features) | ✅ Active — runs post-grip; **v4 (2026-05-13): 0.838 ± 0.018 5-fold CV** on 203 trials (Hard 70 / Medium 74 / Soft 59) auto-discovered from `data_logs/datasets/`. Soft F1 0.933 · Medium F1 0.819 · Hard F1 0.774. Residual Hard↔Medium error tracked in Issue 8 (baseline clamping) and Issue 9 (PID-overshoot feature overlap). |
+| **Material Classification (Phase A-prime)** | 1D-CNN on PID-grip data, (40, 5) @ 20 Hz | 🔵 Research artefact 2026-05-13 — `Model/material_cnn_pid.keras` (v2). **CV 0.942 ± 0.024** on 260 trials (Hard 79 / Medium 112 / Soft 69). Macro F1 0.944 · Hard F1 0.929 · Medium F1 0.938 · Soft F1 0.964. **+0.104 CV vs RF v4** on comparable corpus. Not yet loaded by runtime — pending runtime swap proposal. v1 was a bug (bin-skip dropped 222/286 trials); see DevLog_2026-05-13_Phase A-prime §8. |
+| **Material Classification (Phase B)** | 1D-CNN (40, 5) at 20 Hz | 🟡 Skeleton landed 2026-05-13 (Update_2026-05-13_1D-CNN Phase B Plan, Accepted). Stage 2.5 probe phase + trainer + runtime loader in place; `Model/material_cnn.keras` is generated when ≥ 30 trials/class arrive in `data_logs/datasets/probe/`. |
 
 The running system (`App.py` + `ModelInclude.py`) does **closed-loop force control**: the CNN-LSTM predicts grip force from the tactile sensor, and a PID controller adjusts motor PWM to hold a target force.
 
@@ -28,9 +29,10 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 
 ```
 project/
-├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification
-├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID; returns trial dict
+├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification (RF + CNN)
+├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID, optional Stage 2.5 probe; returns trial dict (incl. probe_records)
 ├── MaterialClassifier.py       # Phase A (RF) runtime inference; loads Model/material_rf.pkl
+├── MaterialCNNClassifier.py    # Phase B (1D-CNN) runtime inference; loads Model/material_cnn.keras; opt-in via --probe
 ├── Claude Report/              # Claude's diagnostic reports (one .md per iteration)
 │   ├── Issue Report/           # Open issues and architectural concerns (one .md per issue) — cleared each `today` run
 │   ├── DevLog/                 # Change Report (When AI change something in code it must update here) — cleared each `today` run
@@ -38,21 +40,28 @@ project/
 │   ├── Daily Report/           # Combined daily archives (Daily Report YYYY-MM-DD.md)
 │   └── Open Issues YYYY-MM-DD.md  # End-of-day open-issues snapshot, written by `today` clear protocol
 ├── Code Store/                 # Archived/reference code + offline trainers
-│   ├── train_material_rf.py    # Phase A trainer (offline; saves Model/material_rf.pkl + scaler)
+│   ├── train_material_rf.py        # Phase A trainer (v4 — auto-discovers data_logs/datasets/; saves Model/material_rf.pkl + scaler)
+│   ├── train_material_cnn_pid.py   # Phase A-prime trainer (v1 — same dataset as RF v4, 1D-CNN; saves Model/material_cnn_pid.keras + scaler)
+│   ├── train_material_cnn.py       # Phase B trainer (v1 — auto-discovers data_logs/datasets/probe/; saves Model/material_cnn.keras + scaler)
 │   ├── inspect_material_data.py# Per-trial QC dump for ongoing data quality audits
-│   └── (Analysis2ndSensor.ipynb, PIDpwm.ino, Tune.py, ...)
+│   ├── analyze_material_data.py# Dataset-wide statistical audit
+│   └── (Analysis2ndSensor.ipynb, PIDpwmClaude.ino, Tune.py, JupyterPython.ipynb, tes.py, ...)
 ├── data_logs/                  # CSV output per grip session (phase1_<timestamp>_<tag>.csv)
-│   ├── Bin/                    # Archived/old session logs
-│   ├── May/                    # Current session logs by month
-│   ├── Hard.csv / Medium.csv / Soft (1).csv / Soft (2).csv  # Labelled training CSVs (Phase A source)
-│   └── Prediction/             # Live prediction-mode session captures by class
-│       ├── Hard/  Medium/  Soft/   # phase1_<ts>.csv + phase1_<ts>_summary.csv per session
+│   ├── datasets/               # Authoritative training corpus
+│   │   ├── *.csv               # Phase A raw per-packet CSVs — auto-discovered by train_material_rf.py
+│   │   ├── bin/                # Files excluded from Phase A training
+│   │   └── probe/              # Phase B probe-phase CSVs (40 rows × 5 features per trial, concatenated)
+│   └── (live session captures: phase1_<ts>.csv + phase1_<ts>_summary.csv + optional phase1_<ts>_probe.csv)
 ├── Model/
 │   ├── my_cnn_lstm_model.keras # Force prediction model (active)
 │   ├── scaler_X.pkl            # PowerTransformer for [Conductance, Is_Press]
 │   ├── scaler_y.pkl            # MinMaxScaler for Force_N target
 │   ├── material_rf.pkl         # Phase A material classifier (RandomForest, 5 features)
 │   ├── scaler_mat_rf.pkl       # StandardScaler for material classifier features
+│   ├── material_cnn.keras      # Phase B material classifier (1D-CNN, (40,5)) — generated by Code Store/train_material_cnn.py
+│   ├── scaler_mat_cnn.pkl      # Per-channel StandardScaler bundle for Phase B (incl. classes_ and window_len)
+│   ├── material_cnn_pid.keras  # Phase A-prime CNN (1D-CNN on PID-grip data, research artefact) — generated by Code Store/train_material_cnn_pid.py
+│   ├── scaler_mat_cnn_pid.pkl  # Per-channel StandardScaler bundle for Phase A-prime
 │   ├── Train/                  # Training notebook (CNNLstm.ipynb) and processed datasets
 │   └── ModelV1/                # Archived previous-version model + scalers
 ├── Research/                   # Article-quality artefacts (benchmarks, baselines)
@@ -120,14 +129,19 @@ STOP\n             # sent on clean exit
 | Inference call | `model(scaled_input, training=False)` — never use `.predict()` |
 | Training sample rate | **1.8 Hz** — inference interval must match: `INTERVAL = 1/1.8 ≈ 0.556 s` |
 
-### Material Classification Model (1D-CNN) — Planned
+### Material Classification Model (1D-CNN) — Phase B Skeleton (Update_2026-05-13)
 
 | Parameter | Value |
 |---|---|
-| Classes | Hard / Medium / Soft |
-| Input | Dynamic Force-Deformation Signature (time series) |
-| Target sample rate | 1.8 Hz (0.556 s interval) |
-| Key feature | `Δpos = pos_current − pos_at_first_contact` |
+| File | `Model/material_cnn.keras` (generated by `Code Store/train_material_cnn.py`) |
+| Input shape | `(1, 40, 5)` — batch=1, 40 timesteps @ 20 Hz, 5 features |
+| Features (order critical) | `[shifted_cond, delta_pos, d_cond_dt, d_dpos_dt, res_norm]` |
+| Output | 3-class softmax: Hard / Medium / Soft |
+| Feature scaler | `Model/scaler_mat_cnn.pkl` — per-channel `StandardScaler` (bundle includes `classes` and `window_len`) |
+| Window alignment | First sample = first packet with `res_k < 0.93 × baseline_res_k` (same as PID `is_press` latch) |
+| Sample rate | 20 Hz — bin-mean accumulation over 50 ms windows of raw packets |
+| Architecture | Conv1D(32, k=5) → Conv1D(64, k=3) → MaxPool(2) → Conv1D(64, k=3) → GlobalAvgPool → Dropout(0.3) → Dense(32) → Dense(3, softmax). ~25k params. |
+| Data source | `data_logs/datasets/probe/*.csv` — auto-discovered |
 
 ---
 
@@ -200,6 +214,17 @@ Seeds the 60-frame rolling buffer with idle data from between grips. This preven
 - Fallback: `250.0 kΩ` if no samples received.
 - Derive `current_sensor_baseline` (conductance) and `threshold_res_k`.
 
+### Stage 2.5 — Probe Phase (optional, Phase B 1D-CNN)
+Runs **only when `config["PROBE_ENABLED"]=True`** (set by `App.py --probe`). Between baseline calibration and approach, the gripper performs a slow constant-velocity press to capture a pre-PID deformation trajectory:
+
+- PWM ramps linearly from `PROBE_PWM_START` (default `−80`) to `PROBE_PWM_END` (default `−150`) over `PROBE_DURATION` seconds (default `2.0`).
+- Contact detection trigger is identical to Stage 4's `is_press` latch: `res_k < 0.93 × baseline_res_k`.
+- After contact, packets are accumulated into 50 ms bins (20 Hz); each bin emits one (5-feature) row: `shifted_cond`, `delta_pos = pos − pos_at_contact`, `d_cond_dt`, `d_dpos_dt`, `res_norm = res_k / baseline_res_k` clipped `[0, 1.5]`.
+- Capture stops at 40 rows or `PROBE_DURATION + 2.0 s` timeout (whichever first). PWM is dropped to 0 for 50 ms before Stage 3 starts.
+- Output: `probe_records` field in the returned trial dict; `App.py` persists it to `data_logs/datasets/probe/phase1_<ts>_<tag>_probe.csv` and runs `MaterialCNNClassifier.classify_probe` post-grip.
+
+Trials without contact or with fewer than 40 timesteps produce an empty `probe_records` and the CNN returns `(None, None)` — the main grip continues normally.
+
 ### Stage 3 — Approach
 ```python
 current_pwm = INITIAL_PWM   # from config['GRIP_PWM'], e.g. -210
@@ -261,10 +286,10 @@ All PID parameters live in `App.py` and are passed via `config` dict:
 
 | Constant | Default | Notes |
 |---|---|---|
-| `TARGET_FORCE` | `2.5` N | Setpoint |
-| `PID_KP` | `50.0` | Proportional gain |
-| `PID_KI` | `22.0` | Integral gain (Report 2: raised from 13 to overcome PID undergrip) |
-| `PID_KD` | `5.0` | Derivative gain (Report 1: lowered from 20, was backing off too hard) |
+| `TARGET_FORCE` | `3.5` N | Setpoint (2026-05-12: raised from 2.5 N) |
+| `PID_KP` | `70.0` | Proportional gain (2026-05-12: raised from 50 with TARGET_FORCE→3.5 N) |
+| `PID_KI` | `20.0` | Integral gain (2026-05-12: 22→20 after re-tune; Report 2: originally 13→22) |
+| `PID_KD` | `7.0` | Derivative gain (2026-05-12: 5→7; Report 1 had lowered from 20) |
 | `PID_ALPHA` | `0.4` | LPF on PWM output (Report 2: tuned down from 0.6 — was bleeding approach pressure too fast) |
 | `SENSOR_GAIN` | `1.0` | Conductance slope scalar; set to `0.08` for new/replacement sensor |
 | `GRIP_PWM` | `−180` | Approach PWM (before contact) |
@@ -359,13 +384,27 @@ Phase 1 and Phase 2 use the same `App.py`. The difference is whether the model i
 
 `Code Store/Analysis2ndSensor.ipynb` handles the data pipeline between phases: it takes Phase 1 CSVs, applies feature engineering (`shifted_cond`, `is_press`), and produces a dataset ready for model retraining or evaluation. The training notebook lives at `Model/Train/CNNLstm.ipynb`.
 
+### Phase A Material Classifier — Retrain Workflow (v4+)
+
+`Code Store/train_material_rf.py` is **auto-discovery**: it scans the top level of `data_logs/datasets/` and infers each CSV's class from its `material` column. To retrain:
+
+1. Collect grips via `App.py --material <hard|medium|soft>`.
+2. Move the resulting raw `phase1_<ts>.csv` (not `_summary.csv`) into `data_logs/datasets/`.
+3. Optionally drop summary CSVs / retired captures into `data_logs/datasets/bin/` (ignored by the scan).
+4. Run `python "Code Store/train_material_rf.py"` — it prints a keep/skip log, refits the RF + scaler, and overwrites `Model/material_rf.pkl` and `Model/scaler_mat_rf.pkl`.
+
+No `SOURCES` edit required. CSVs without a `material` label or missing required columns are skipped with a printed reason.
+
 ---
 
 ## 13. Running the System
 
 ```bash
-# Single manual grip per keypress
+# Single manual grip per keypress (Phase A only — no probe)
 python App.py --port COM18 --material soft --tag trial1
+
+# Phase B probe collection / live CNN inference (enables Stage 2.5):
+python App.py --port COM18 --material hard --tag probe_train --probe
 
 # Commands at runtime:
 #   1        → run one grip loop
@@ -374,4 +413,7 @@ python App.py --port COM18 --material soft --tag trial1
 #   q        → quit and close CSV
 ```
 
-Output CSV is saved to `data_logs/phase1_<timestamp>_<tag>.csv`.
+Output CSVs:
+- `data_logs/phase1_<ts>_<tag>.csv` — per-packet (Phase A source data + live force log)
+- `data_logs/phase1_<ts>_<tag>_summary.csv` — per-trial (RF + CNN predictions, probe length)
+- `data_logs/datasets/probe/phase1_<ts>_<tag>_probe.csv` — per-probe-timestep (Phase B training corpus, only when `--probe`)

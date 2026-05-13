@@ -1,15 +1,21 @@
 """
-Phase A — Random Forest Material Classifier Trainer (v2 — 2026-05-11)
+Phase A — Random Forest Material Classifier Trainer (v4 — 2026-05-13)
 ======================================================================
 Trains a RandomForestClassifier on 5 hand-crafted features per grip trial:
   delta_pos_max, res_drop_pct, f_peak, rise_ms, stiffness_proxy
 
-v2 retrains on **post-firmware-fix** labelled data only. The pre-fix May/
-Prediction CSVs were disqualified by Daily Report 2026-05-10 (Issue 7).
+v4 — auto-discovery refactor
+----------------------------
+SOURCES is no longer hardcoded. The trainer scans data_logs/datasets/
+(top-level only, `bin/` and any other subfolder ignored) and infers
+each CSV's class from its `material` column. To add new training data,
+drop a labelled per-packet CSV into data_logs/datasets/ — no code edits.
 
-Inputs : data_logs/phase1_20260511_153751.csv      (Hard)
-         data_logs/Medium (1).csv                  (Medium)
-         data_logs/Soft (3).csv                    (Soft)
+Each input CSV must have the standard 15-column per-packet schema
+(loop_index, t_ms, ..., resistance, is_press, pred_force_n, ...).
+Files missing the `material` value, files with the summary schema
+(11 cols), and files inside `bin/` are skipped with a warning.
+
 Outputs: Model/material_rf.pkl, Model/scaler_mat_rf.pkl
 
 Run offline once; do not call from runtime.
@@ -24,15 +30,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import StratifiedKFold, cross_val_score, cross_val_predict
 from sklearn.metrics import confusion_matrix, classification_report
 
-BASE      = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR  = os.path.join(BASE, "data_logs")
-MODEL_DIR = os.path.join(BASE, "Model")
+BASE       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR   = os.path.join(BASE, "data_logs", "datasets")
+MODEL_DIR  = os.path.join(BASE, "Model")
 
-SOURCES = {
-    "Hard":   ["phase1_20260511_153751.csv"],
-    "Medium": ["Medium (1).csv"],
-    "Soft":   ["Soft (3).csv"],
-}
+# Class labels recognised in the CSV `material` column (case-insensitive)
+LABEL_MAP = {"hard": "Hard", "medium": "Medium", "soft": "Soft"}
 
 FEATURE_NAMES = ["delta_pos_max", "res_drop_pct", "f_peak", "rise_ms", "stiffness_proxy"]
 
@@ -85,24 +88,58 @@ def extract_trial_features(trial_df: pd.DataFrame):
     }, ""
 
 
+REQUIRED_COLS = {"loop_index", "is_press", "resistance", "pos_deg", "pred_force_n", "t_ms", "material"}
+
+
+def _discover_sources():
+    """Scan DATA_DIR (top level only) and return [(label, filename)] for usable CSVs.
+
+    Prints one line per file (kept or skipped + reason).
+    """
+    print(f"\n  Scanning {DATA_DIR}")
+    out = []
+    for fn in sorted(os.listdir(DATA_DIR)):
+        full = os.path.join(DATA_DIR, fn)
+        if not os.path.isfile(full) or not fn.lower().endswith(".csv"):
+            continue
+        try:
+            head = pd.read_csv(full, nrows=5)
+        except Exception as e:
+            print(f"    [skip] {fn:40s}  unreadable ({e})")
+            continue
+        if not REQUIRED_COLS.issubset(head.columns):
+            missing = REQUIRED_COLS - set(head.columns)
+            print(f"    [skip] {fn:40s}  not per-packet schema (missing: {sorted(missing)})")
+            continue
+        mats = [m for m in head["material"].dropna().astype(str).str.lower().unique() if m]
+        label = LABEL_MAP.get(mats[0]) if mats else None
+        if label is None:
+            print(f"    [skip] {fn:40s}  no `material` label")
+            continue
+        if len(mats) > 1:
+            print(f"    [warn] {fn:40s}  multiple labels {mats}; using {mats[0]}")
+        print(f"    [keep] {fn:40s}  -> {label}")
+        out.append((label, fn))
+    return out
+
+
 def collect_dataset():
     rows, dropped = [], []
-    for label, files in SOURCES.items():
-        for fn in files:
-            path = os.path.join(DATA_DIR, fn)
-            if not os.path.exists(path):
-                print(f"  [skip] {fn} not found")
+    sources = _discover_sources()
+    if not sources:
+        return pd.DataFrame(rows), pd.DataFrame(dropped)
+    for label, fn in sources:
+        path = os.path.join(DATA_DIR, fn)
+        df = pd.read_csv(path)
+        for li, g in df.groupby("loop_index"):
+            feats, reason = extract_trial_features(g)
+            if feats is None:
+                dropped.append({"label": label, "source": fn, "loop": int(li), "reason": reason})
                 continue
-            df = pd.read_csv(path)
-            for li, g in df.groupby("loop_index"):
-                feats, reason = extract_trial_features(g)
-                if feats is None:
-                    dropped.append({"label": label, "source": fn, "loop": int(li), "reason": reason})
-                    continue
-                feats["label"] = label
-                feats["source"] = fn
-                feats["loop"]  = int(li)
-                rows.append(feats)
+            feats["label"]  = label
+            feats["source"] = fn
+            feats["loop"]   = int(li)
+            rows.append(feats)
     return pd.DataFrame(rows), pd.DataFrame(dropped)
 
 
