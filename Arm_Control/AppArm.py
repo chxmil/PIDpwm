@@ -64,6 +64,10 @@ REJECT_BIN   = '7'   # unclassifiable objects (classifier returned None)
 # /api run_task) is locked out so it cannot collide with a sort cycle.
 SORT_MODE = False
 
+# Web-console state (read by the Material Sorting Console UI via /api status).
+GATE_PROMPT = ""   # non-empty while a sort gate is waiting for confirmation
+LAST_SORT   = {}   # {'material':.., 'bin':.., 'ts':..} of the last placed object
+
 # Poses AppSort.py needs present in positions.json before a real run.
 REQUIRED_SORT_POSES = ['start', 'pregrip',
                        MATERIAL_BIN['Hard'], MATERIAL_BIN['Medium'],
@@ -238,11 +242,12 @@ def sort_gate(pose_key, step_name):
       • interrupt/stop  → abort.
     Returns True if confirmed, False if interrupted. `wait_for_permission`
     (used by the legacy task) is intentionally left unchanged."""
-    global ALLOW_MANUAL_ADJUST, CONFIRMATION_RECEIVED, SYSTEM_STATE, INTERRUPT_FLAG
+    global ALLOW_MANUAL_ADJUST, CONFIRMATION_RECEIVED, SYSTEM_STATE, INTERRUPT_FLAG, GATE_PROMPT
     ALLOW_MANUAL_ADJUST   = True
     CONFIRMATION_RECEIVED = False
+    GATE_PROMPT           = step_name      # surfaced to the web console
     print(f"[Sort] GATE '{step_name}': jog to correct drift if needed — "
-          f"btn 8 = save '{pose_key}', btn 9 = confirm")
+          f"btn 8 = save '{pose_key}', btn 9 = confirm (or web Confirm button)")
     try:
         joy = pygame.joystick.Joystick(0)
     except Exception:
@@ -250,6 +255,7 @@ def sort_gate(pose_key, step_name):
     while not CONFIRMATION_RECEIVED:
         if INTERRUPT_FLAG or SYSTEM_STATE in ("INTERRUPT", "STOP"):
             ALLOW_MANUAL_ADJUST = False
+            GATE_PROMPT = ""
             return False
         if joy is not None:
             try:
@@ -269,6 +275,7 @@ def sort_gate(pose_key, step_name):
                 pass
         time.sleep(0.1)
     ALLOW_MANUAL_ADJUST = False
+    GATE_PROMPT = ""
     time.sleep(0.5)
     return True
 
@@ -402,6 +409,7 @@ def index():
 @app.route('/api', methods=['POST'])
 def api_handler():
     global SYSTEM_STATE, saved_positions, INTERRUPT_FLAG, SORT_MODE
+    global CONFIRMATION_RECEIVED, GATE_PROMPT, LAST_SORT
     data = request.get_json()
     cmd  = data.get('cmd')
 
@@ -433,7 +441,18 @@ def api_handler():
     elif cmd == 'status':
         return jsonify({'state': SYSTEM_STATE,
                         'confirmed': CONFIRMATION_RECEIVED,
-                        'sort_mode': SORT_MODE})
+                        'sort_mode': SORT_MODE,
+                        'gate': GATE_PROMPT,          # '' when no gate waiting
+                        'awaiting': bool(GATE_PROMPT) and not CONFIRMATION_RECEIVED,
+                        'last_sort': LAST_SORT})
+
+    elif cmd == 'confirm':
+        # Web-console equivalent of joystick btn 9. Only acts while a gate is
+        # actually waiting, so a stray click can't pre-confirm a future gate.
+        if ALLOW_MANUAL_ADJUST and not CONFIRMATION_RECEIVED:
+            CONFIRMATION_RECEIVED = True
+            return jsonify({'status': 'confirmed', 'gate': GATE_PROMPT})
+        return jsonify({'status': 'no_gate'})
 
     elif cmd == 'arm_goto':
         target = str(data.get('target', ''))
@@ -491,6 +510,9 @@ def api_handler():
         SYSTEM_STATE = "STOP"
         if interrupted:
             safe_home()                                # Gap A
+        else:
+            LAST_SORT = {'material': material, 'bin': bin_id,
+                         'ts': time.strftime('%H:%M:%S')}
         return jsonify({'status': 'interrupt' if interrupted else 'at_bin',
                         'bin': bin_id, 'material': material})
 

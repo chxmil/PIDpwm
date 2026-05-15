@@ -148,6 +148,26 @@ Material → bin (defaults): **Hard→4, Medium→5, Soft→6**, unclassifiable�
 Manual jog is **always available**, including at both gates — that is how you
 correct pose drift every time.
 
+### 6.1 Web console (no joystick needed for confirm)
+
+Open `http://192.168.50.244:5001/` — the **Material Sorting Console**:
+
+- **Live Status** updates every second: arm state, sort mode, last sorted
+  object (material → bin), and a banner that **pulses amber when a gate is
+  waiting**.
+- **CONFIRM** button — web equivalent of joystick btn 9 (enabled only while a
+  gate is actually waiting).
+- **EMERGENCY STOP** — interrupt + safe-home.
+- **Teach Poses** — labelled save buttons: START, PRE-GRIP, SAFE, and
+  HARD→Bin 4 / MEDIUM→Bin 5 / SOFT→Bin 6 / REJECT→Bin 7. Jog with the
+  joystick, then click to save (works any time).
+- Legacy random pick-place is tucked in a collapsed section and is locked
+  while sort mode is on.
+
+You can confirm a gate from **either** the joystick (btn 9) **or** the web
+CONFIRM button. Pose drift correction is still done by jogging (joystick);
+btn 8 or the matching web Save button persists the corrected pose.
+
 ---
 
 ## 7. Safety & limits

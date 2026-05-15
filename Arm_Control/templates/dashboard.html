@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32-S3 · PID Dashboard</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:     #0f172a;
+      --card:   #1e293b;
+      --border: #334155;
+      --text:   #e2e8f0;
+      --muted:  #94a3b8;
+      --green:  #22c55e;
+      --red:    #ef4444;
+      --blue:   #3b82f6;
+      --yellow: #f59e0b;
+      --accent: #6366f1;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: 0.4px; }
+    .header-meta { display: flex; align-items: center; gap: 20px; font-size: 0.84rem; color: var(--muted); }
+    .pill {
+      padding: 3px 12px;
+      border-radius: 999px;
+      font-size: 0.76rem;
+      font-weight: 600;
+    }
+    .pill.on  { background: rgba(34,197,94,.15);  color: var(--green);  border: 1px solid rgba(34,197,94,.3); }
+    .pill.off { background: rgba(239,68,68,.15);  color: var(--red);    border: 1px solid rgba(239,68,68,.3); }
+
+    /* ── Layout ── */
+    .main { padding: 18px; display: grid; gap: 14px; }
+    .row-a { display: grid; grid-template-columns: 210px 1fr 290px; gap: 14px; }
+    .row-b { display: grid; grid-template-columns: 210px 1fr; gap: 14px; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .card-title {
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* ── Angle gauge (SVG semicircle) ── */
+    .gauge-card { display: flex; flex-direction: column; align-items: center; }
+    .gauge-svg  { width: 176px; height: 96px; overflow: visible; }
+    .gauge-num  {
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: var(--green);
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      margin-top: 8px;
+    }
+    .gauge-unit   { font-size: 0.78rem; color: var(--muted); }
+    .gauge-target { font-size: 0.82rem; color: var(--blue);  margin-top: 6px; }
+
+    /* ── Chart ── */
+    .chart-wrap { position: relative; height: 210px; }
+
+    /* ── Controls ── */
+    .ctrl-section { margin-bottom: 16px; }
+    .ctrl-label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+    .pid-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+    .pid-field label { font-size: 0.7rem; color: var(--muted); display: block; margin-bottom: 3px; }
+    .pid-field input {
+      width: 100%;
+      background: rgba(255,255,255,.05);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--text);
+      font-size: 0.88rem;
+    }
+    .pid-field input:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      width: 100%;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:hover  { opacity: .88; }
+    .btn:active { transform: scale(.97); }
+    .btn-send  { background: var(--accent); color: #fff; margin-top: 6px; }
+    .btn-apply { background: #0f766e;       color: #fff; }
+
+    /* ── Voltage card ── */
+    .volt-num  { font-size: 3rem; font-weight: 700; color: var(--yellow); font-variant-numeric: tabular-nums; line-height: 1; }
+    .volt-unit { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+
+    /* ── Info grid ── */
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .info-item {
+      background: rgba(255,255,255,.03);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .info-item-label { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .info-item-val   { font-size: 1.1rem; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+    /* ── Footer ── */
+    .footer { text-align: center; padding: 12px; font-size: 0.8rem; }
+    .footer a { color: var(--muted); text-decoration: none; }
+    .footer a:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────── -->
+<div class="header">
+  <h1>ESP32-S3 &middot; PID Dashboard</h1>
+  <div class="header-meta">
+    <span id="hdr-cpu">CPU: --&deg;C</span>
+    <span id="hdr-pill" class="pill off">&#9679; Disconnected</span>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ── Row A: Gauge | Chart | Controls ──────────────────────── -->
+  <div class="row-a">
+
+    <!-- Angle gauge -->
+    <div class="card gauge-card">
+      <div class="card-title">Current Angle</div>
+      <svg class="gauge-svg" viewBox="0 0 176 96">
+        <!-- track -->
+        <path d="M8,96 A80,80 0 0,1 168,96"
+              fill="none" stroke="#334155" stroke-width="13" stroke-linecap="round"/>
+        <!-- fill — dasharray controlled by JS; total arc ≈ 251 -->
+        <path id="gauge-fill" d="M8,96 A80,80 0 0,1 168,96"
+              fill="none" stroke="#22c55e" stroke-width="13" stroke-linecap="round"
+              stroke-dasharray="0 251"/>
+      </svg>
+      <div class="gauge-num"><span id="g-angle">--</span><span class="gauge-unit">&deg;</span></div>
+      <div class="gauge-target">Target&nbsp;<span id="g-target">--</span>&deg;</div>
+    </div>
+
+    <!-- Live PID chart -->
+    <div class="card">
+      <div class="card-title">Target vs Current Angle</div>
+      <div class="chart-wrap">
+        <canvas id="pid-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card">
+      <div class="card-title">Controls</div>
+
+      <div class="ctrl-section">
+        <div class="ctrl-label">
+          <span>Target Angle</span>
+          <span id="slider-lbl">90&deg;</span>
+        </div>
+        <input type="range" id="angle-slider" min="0" max="180" value="90" step="0.5"
+               oninput="document.getElementById('slider-lbl').textContent=this.value+'°'">
+        <button class="btn btn-send" onclick="sendAngle()">Send Angle</button>
+      </div>
+
+      <div class="ctrl-section">
+        <div class="ctrl-label"><span>PID Gains</span></div>
+        <div class="pid-row">
+          <div class="pid-field">
+            <label>Kp</label>
+            <input type="number" id="inp-kp" value="1.0"  step="0.1"  min="0">
+          </div>
+          <div class="pid-field">
+            <label>Ki</label>
+            <input type="number" id="inp-ki" value="0.1"  step="0.01" min="0">
+          </div>
+          <div class="pid-field">
+            <label>Kd</label>
+            <input type="number" id="inp-kd" value="0.05" step="0.01" min="0">
+          </div>
+        </div>
+        <button class="btn btn-apply" onclick="sendPID()">Apply PID Gains</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Row B: Voltage | System info ─────────────────────────── -->
+  <div class="row-b">
+
+    <div class="card">
+      <div class="card-title">Battery Voltage</div>
+      <div class="volt-num"><span id="g-volt">--</span></div>
+      <div class="volt-unit">Volts</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">System</div>
+      <div class="info-grid">
+        <div class="info-item">
+          <div class="info-item-label">Update Rate</div>
+          <div class="info-item-val" id="inf-hz">-- Hz</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">CPU Temp</div>
+          <div class="info-item-val" id="inf-temp">--&deg;C</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">Error (&Delta;&deg;)</div>
+          <div class="info-item-val" id="inf-err">--</div>
+        </div>
+        <div class="info-item">
+          <div class="info-item-label">ESP32</div>
+          <div class="info-item-val" id="inf-status">--</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="footer"><a href="/">&#8592; Arm Control</a></div>
+
+<script>
+// ── Socket.IO ─────────────────────────────────────────────────────
+const socket = io();
+
+// ── Chart.js (200-point sliding window) ──────────────────────────
+const MAX_PTS    = 200;
+const chartLabels  = Array(MAX_PTS).fill('');
+const dataTarget   = Array(MAX_PTS).fill(null);
+const dataCurrent  = Array(MAX_PTS).fill(null);
+
+const chart = new Chart(
+  document.getElementById('pid-chart').getContext('2d'), {
+  type: 'line',
+  data: {
+    labels: chartLabels,
+    datasets: [
+      {
+        label: 'Target',
+        data: dataTarget,
+        borderColor: '#6366f1',
+        borderWidth: 2,
+        borderDash: [5, 3],
+        pointRadius: 0,
+        tension: 0.3,
+      },
+      {
+        label: 'Current',
+        data: dataCurrent,
+        borderColor: '#22c55e',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.3,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    scales: {
+      x: { display: false },
+      y: {
+        min: 0, max: 180,
+        ticks: { color: '#94a3b8', stepSize: 30 },
+        grid:  { color: 'rgba(255,255,255,0.05)' },
+      }
+    },
+    plugins: {
+      legend: { labels: { color: '#94a3b8', boxWidth: 16, padding: 10 } }
+    }
+  }
+});
+
+// ── Gauge arc (total arc path ≈ 251px at viewBox scale) ───────────
+const GAUGE_TOTAL = 251;
+const gaugeArc    = document.getElementById('gauge-fill');
+
+function setGauge(deg) {
+  const pct    = Math.max(0, Math.min(1, deg / 180));
+  const filled = pct * GAUGE_TOTAL;
+  gaugeArc.setAttribute('stroke-dasharray', `${filled} ${GAUGE_TOTAL}`);
+  gaugeArc.setAttribute('stroke',
+    deg < 90  ? '#22c55e' :
+    deg < 150 ? '#f59e0b' : '#ef4444');
+}
+
+// ── Hz counter ────────────────────────────────────────────────────
+let hzCount = 0, hzLast = Date.now();
+function bumpHz() {
+  hzCount++;
+  const now = Date.now();
+  if (now - hzLast >= 1000) {
+    document.getElementById('inf-hz').textContent = hzCount + ' Hz';
+    hzCount = 0;
+    hzLast  = now;
+  }
+}
+
+// ── State updates ─────────────────────────────────────────────────
+socket.on('state_update', function(d) {
+  bumpHz();
+
+  const angle   = d.current_angle;
+  const target  = d.target_angle;
+  const voltage = d.battery_voltage;
+  const cpu     = d.cpu_temp;
+  const conn    = d.is_connected;
+
+  // Connection pill
+  const pill = document.getElementById('hdr-pill');
+  if (conn) {
+    pill.textContent = '● Connected';
+    pill.className   = 'pill on';
+  } else {
+    pill.textContent = '● Disconnected';
+    pill.className   = 'pill off';
+  }
+  const statusEl = document.getElementById('inf-status');
+  statusEl.textContent = conn ? 'Online' : 'Offline';
+  statusEl.style.color = conn ? '#22c55e' : '#ef4444';
+
+  // Angle gauge
+  if (angle !== null) {
+    document.getElementById('g-angle').textContent = angle.toFixed(1);
+    setGauge(angle);
+  }
+  if (target !== null) {
+    document.getElementById('g-target').textContent = target.toFixed(1);
+  }
+
+  // Voltage
+  if (voltage !== null) {
+    document.getElementById('g-volt').textContent = voltage.toFixed(2);
+  }
+
+  // CPU temp
+  if (cpu !== null) {
+    document.getElementById('hdr-cpu').textContent  = 'CPU: ' + cpu + '°C';
+    document.getElementById('inf-temp').textContent = cpu + '°C';
+  }
+
+  // Error
+  if (angle !== null && target !== null) {
+    const err = angle - target;
+    const el  = document.getElementById('inf-err');
+    el.textContent = err.toFixed(1) + '°';
+    el.style.color = Math.abs(err) < 2  ? '#22c55e' :
+                     Math.abs(err) < 10 ? '#f59e0b' : '#ef4444';
+  }
+
+  // Chart
+  dataTarget.push(target);
+  dataCurrent.push(angle);
+  chartLabels.push('');
+  if (dataTarget.length > MAX_PTS) {
+    dataTarget.shift(); dataCurrent.shift(); chartLabels.shift();
+  }
+  chart.update('none');
+});
+
+// ── Commands ──────────────────────────────────────────────────────
+function sendAngle() {
+  const angle = parseFloat(document.getElementById('angle-slider').value);
+  fetch('/api/esp32/target', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ angle }),
+  });
+}
+
+function sendPID() {
+  const kp = parseFloat(document.getElementById('inp-kp').value);
+  const ki = parseFloat(document.getElementById('inp-ki').value);
+  const kd = parseFloat(document.getElementById('inp-kd').value);
+  fetch('/api/esp32/pid', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({ kp, ki, kd }),
+  });
+}
+</script>
+</body>
+</html>

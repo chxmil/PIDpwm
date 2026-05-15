@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Material Sorting Console</title>
+  <style>
+    :root{
+      --bg:#0f172a; --card:#1e293b; --border:#334155; --text:#e2e8f0;
+      --muted:#94a3b8; --green:#22c55e; --red:#ef4444; --blue:#3b82f6;
+      --amber:#f59e0b; --accent:#6366f1;
+      --hard:#ef4444; --medium:#f59e0b; --soft:#22c55e; --reject:#64748b;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);
+         font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;padding:18px}
+    .wrap{max-width:880px;margin:auto;display:grid;gap:16px}
+    .header{display:flex;align-items:center;justify-content:space-between;
+            background:var(--card);border:1px solid var(--border);
+            border-radius:12px;padding:14px 20px}
+    .header h1{font-size:1.15rem;letter-spacing:.4px}
+    .pill{padding:4px 14px;border-radius:999px;font-size:.78rem;font-weight:700}
+    .pill.on{background:rgba(34,197,94,.15);color:var(--green);
+             border:1px solid rgba(34,197,94,.35)}
+    .pill.off{background:rgba(239,68,68,.15);color:var(--red);
+              border:1px solid rgba(239,68,68,.35)}
+    .card{background:var(--card);border:1px solid var(--border);
+          border-radius:12px;padding:18px 20px}
+    .card-title{font-size:.7rem;font-weight:700;text-transform:uppercase;
+                letter-spacing:1px;color:var(--muted);margin-bottom:14px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .stat{background:rgba(255,255,255,.03);border-radius:10px;padding:12px 14px}
+    .stat .l{font-size:.66rem;color:var(--muted);text-transform:uppercase;
+             letter-spacing:.5px}
+    .stat .v{font-size:1.25rem;font-weight:700;margin-top:4px;
+             font-variant-numeric:tabular-nums}
+
+    /* Gate banner */
+    .gate{border-radius:12px;padding:18px 20px;text-align:center;
+          font-weight:700;font-size:1.1rem;border:1px solid var(--border)}
+    .gate.idle{background:rgba(255,255,255,.03);color:var(--muted)}
+    .gate.waiting{background:rgba(245,158,11,.16);color:var(--amber);
+      border-color:rgba(245,158,11,.5);animation:pulse 1.1s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+    button{border:none;border-radius:10px;cursor:pointer;color:#fff;
+           font-weight:700;font-size:1rem;padding:16px;transition:.15s;width:100%}
+    button:hover{opacity:.9} button:active{transform:scale(.97)}
+    button:disabled{opacity:.35;cursor:not-allowed}
+    .b-confirm{background:var(--green);font-size:1.25rem;padding:22px}
+    .b-stop{background:var(--red)}
+    .b-teach{background:var(--accent);font-size:.92rem;padding:13px}
+    .b-hard{background:var(--hard)} .b-medium{background:var(--medium)}
+    .b-soft{background:var(--soft)} .b-reject{background:var(--reject)}
+    .b-util{background:#0f766e;font-size:.92rem;padding:13px}
+    label.s{display:block;font-size:.74rem;color:var(--muted);
+            font-weight:700;margin:14px 0 6px}
+    details{background:var(--card);border:1px solid var(--border);
+            border-radius:12px;padding:14px 18px}
+    summary{cursor:pointer;color:var(--muted);font-size:.85rem;font-weight:600}
+    .legacy{margin-top:12px}
+    .note{font-size:.8rem;color:var(--muted);line-height:1.5}
+    .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+           background:var(--card);border:1px solid var(--border);
+           padding:10px 18px;border-radius:10px;font-size:.85rem;opacity:0;
+           transition:opacity .25s;pointer-events:none}
+    .toast.show{opacity:1}
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <h1>&#129520; Material Sorting Console</h1>
+    <span id="conn" class="pill off">&#9679; connecting…</span>
+  </div>
+
+  <!-- LIVE STATUS -->
+  <div class="card">
+    <div class="card-title">Live Status</div>
+    <div id="gate" class="gate idle">No grip in progress</div>
+    <div class="grid3" style="margin-top:14px">
+      <div class="stat"><div class="l">Arm State</div>
+        <div class="v" id="st-state">--</div></div>
+      <div class="stat"><div class="l">Sort Mode</div>
+        <div class="v" id="st-sort">--</div></div>
+      <div class="stat"><div class="l">Last Sorted</div>
+        <div class="v" id="st-last">--</div></div>
+    </div>
+    <div class="grid2" style="margin-top:14px">
+      <button class="b-confirm" id="btn-confirm" onclick="confirmGate()"
+              disabled>&#10003; CONFIRM</button>
+      <button class="b-stop" onclick="stopAll()">&#9632; EMERGENCY STOP</button>
+    </div>
+    <p class="note" style="margin-top:12px">
+      The PC (<b>AppSort.py</b>) drives grip &amp; classification. When the arm
+      reaches the object or a bin it <b>waits here</b> — correct the pose with
+      the joystick if it drifted, then press <b>CONFIRM</b> (or joystick
+      btn&nbsp;9). Joystick btn&nbsp;8 also saves the corrected pose.
+    </p>
+  </div>
+
+  <!-- TEACH POSES -->
+  <div class="card">
+    <div class="card-title">Teach Poses &nbsp;(jog with joystick, then save)</div>
+
+    <label class="s">Workflow poses</label>
+    <div class="grid3">
+      <button class="b-util" onclick="savePos('start')">Save START</button>
+      <button class="b-util" onclick="savePos('pregrip')">Save PRE-GRIP</button>
+      <button class="b-util" onclick="savePos('safe')">Save SAFE</button>
+    </div>
+
+    <label class="s">Material bins</label>
+    <div class="grid2">
+      <button class="b-hard"   onclick="savePos('4')">Save HARD &rarr; Bin 4</button>
+      <button class="b-medium" onclick="savePos('5')">Save MEDIUM &rarr; Bin 5</button>
+      <button class="b-soft"   onclick="savePos('6')">Save SOFT &rarr; Bin 6</button>
+      <button class="b-reject" onclick="savePos('7')">Save REJECT &rarr; Bin 7</button>
+    </div>
+    <p class="note" style="margin-top:12px">
+      Bin mapping (Hard&rarr;4, Medium&rarr;5, Soft&rarr;6, unknown&rarr;7) is the
+      default; override via <code>positions.json</code> keys
+      <code>material_bin</code>/<code>reject_bin</code>. Saving works any time.
+    </p>
+  </div>
+
+  <!-- LEGACY (collapsed) -->
+  <details>
+    <summary>Legacy random pick &amp; place (disabled while sorting)</summary>
+    <div class="legacy">
+      <div class="grid3" style="margin-bottom:10px">
+        <button class="b-teach" onclick="savePos('home')">Save HOME</button>
+        <button class="b-teach" onclick="savePos('1')">Save Pos 1</button>
+        <button class="b-teach" onclick="savePos('2')">Save Pos 2</button>
+      </div>
+      <div class="grid3">
+        <button class="b-teach" onclick="runTask(1)">Pick 1 &amp; Random</button>
+        <button class="b-teach" onclick="runTask(2)">Pick 2 &amp; Random</button>
+        <button class="b-teach" onclick="runTask(3)">Pick 3 &amp; Random</button>
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API = '/api';
+function post(body){
+  return fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify(body)}).then(r=>r.json());
+}
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2200);
+}
+
+function savePos(name){
+  post({cmd:'save_pos',name:name}).then(d=>toast('Saved pose: '+(d.name||name)));
+}
+function runTask(src){
+  post({cmd:'run_task',source:src}).then(d=>{
+    toast(d.status==='started' ? 'Legacy task running'
+        : d.status==='locked'  ? 'Locked — sort mode active'
+        : 'Status: '+d.status);
+  });
+}
+function confirmGate(){
+  post({cmd:'confirm'}).then(d=>{
+    toast(d.status==='confirmed' ? 'Confirmed: '+(d.gate||'')
+                                 : 'No gate is waiting');
+  });
+}
+function stopAll(){ post({cmd:'stop'}).then(()=>toast('EMERGENCY STOP sent')); }
+
+// ── Live status poll (1 Hz) ──────────────────────────────────────────
+function refresh(){
+  post({cmd:'status'}).then(d=>{
+    document.getElementById('conn').className='pill on';
+    document.getElementById('conn').innerHTML='&#9679; online';
+
+    document.getElementById('st-state').textContent = d.state || '--';
+    document.getElementById('st-sort').textContent  =
+      d.sort_mode ? 'ON (sorting)' : 'off';
+    const ls = d.last_sort || {};
+    document.getElementById('st-last').textContent =
+      ls.material ? (ls.material+' → bin '+ls.bin) : '--';
+
+    const g = document.getElementById('gate');
+    const btn = document.getElementById('btn-confirm');
+    if (d.awaiting){
+      g.className='gate waiting';
+      g.textContent='⏳  '+(d.gate||'Waiting')+' — press CONFIRM';
+      btn.disabled=false;
+    } else if (d.gate){
+      g.className='gate idle'; g.textContent=d.gate+' (confirmed)';
+      btn.disabled=true;
+    } else {
+      g.className='gate idle'; g.textContent='No grip in progress';
+      btn.disabled=true;
+    }
+  }).catch(()=>{
+    document.getElementById('conn').className='pill off';
+    document.getElementById('conn').innerHTML='&#9679; offline';
+  });
+}
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>

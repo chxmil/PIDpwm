@@ -30,7 +30,8 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 ```
 project/
 ├── Arm_Control/
-|    ├── AppArm.py                      # Raspberry Pi arm control (Flask:5001). + additive arm_goto/arm_grip_gate/arm_place/status/sort_mode endpoints, MATERIAL_BIN/REJECT_BIN (config-driven via positions.json), safe_home(), sort_gate() jog+persist gate (Update_2026-05-15 + hardening A–E); legacy joystick jog/random task/routes untouched
+|    ├── AppArm.py                      # Raspberry Pi arm control (Flask:5001). + additive arm_goto/arm_grip_gate/arm_place/status/sort_mode/confirm endpoints, MATERIAL_BIN/REJECT_BIN (config-driven via positions.json), safe_home(), sort_gate() jog+persist gate, GATE_PROMPT/LAST_SORT web state (Update_2026-05-15 + hardening A–E + sorting console); legacy joystick jog/random task/routes untouched
+|    ├── templates/                     # index.html = Material Sorting Console (live status, web Confirm/Stop, teach poses); dashboard.html = ESP32-S3 PID dashboard
 |    └── positions.json                 # Pi runtime poses: start, pregrip, bins (4/5/6/7), optional safe; optional material_bin/reject_bin overrides — written back by sort_gate btn 8
 ├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification (RF + CNN) — FROZEN
 ├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID, optional Stage 2.5 probe; returns trial dict (incl. probe_records) — FROZEN
