@@ -124,7 +124,7 @@ Runtime commands (type then Enter):
 | 2 | Arm → `pregrip`, **GRIP GATE opens** | Jog to correct drift if needed. **Btn 8** = save corrected `pregrip`. **Btn 9** = confirm grip. |
 | 3 | Gripper approaches + PID, then **holds** the object | — |
 | 4 | Classify (CNN-PID → RF fallback) | — |
-| 5 | Arm carries object → material bin, **DROP GATE opens** | Jog to correct bin pose if needed. **Btn 8** = save corrected bin pose. **Btn 9** = confirm drop. |
+| 5 | Arm **retracts to SAFE while carrying**, then moves to the material bin (servo-by-servo), **DROP GATE opens** | Jog to correct bin pose if needed. **Btn 8** = save corrected bin pose. **Btn 9** = confirm drop. |
 | 6 | Gripper releases (drops object) | — |
 | 7 | Arm → `start`, log row written | — |
 

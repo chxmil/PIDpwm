@@ -12,7 +12,8 @@ Per object:
   2. arm_grip_gate <pregrip>  → blocks on human confirm
   3. GripHold.grip()          → approach + PID, then HOLD (object stays gripped)
   4. classify  (CNN-PID primary, RF v4 fallback)
-  5. arm_place <material>     → carries to material bin, blocks on human confirm
+  5. arm_place <material>     → retract to SAFE (carrying), then to material
+                                bin, blocks on human confirm  (servo-by-servo)
   6. GripHold.release()       → Stage-5 drop
   7. arm_goto <start>         → loop
 

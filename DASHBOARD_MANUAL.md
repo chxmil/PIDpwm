@@ -20,7 +20,8 @@ unexpectedly.
 
 ```
   You place object  ->  Arm to pre-grip  ->  [CONFIRM]  ->  PC grips + AI
-        ->  Arm carries to material bin  ->  [CONFIRM]  ->  drop  ->  repeat
+        ->  Arm retracts to SAFE (carrying)  ->  moves to material bin
+        ->  [CONFIRM]  ->  drop  ->  repeat
 ```
 
 Two machines work together:
@@ -138,8 +139,9 @@ The PC closes the gripper, holds the object, and the AI classifies the
 material. Nothing for you to do. The result will appear in **Last Sorted**.
 
 ### Step 6 - the DROP gate
-The arm carries the object to the matching bin. Banner: **amber "[ WAITING ]
-Ready to drop at bin X"**.
+The arm first **retracts to the SAFE pose while carrying the object**, then
+moves (servo-by-servo) to the matching bin - it never sweeps straight across.
+Banner: **amber "[ WAITING ] Ready to drop at bin X"**.
 
 - Press **CONFIRM** to release the object into the bin.
 - Correct the bin position first with the joystick if needed (button 8 saves

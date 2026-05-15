@@ -501,7 +501,16 @@ def api_handler():
                             'material': material}), 400
         INTERRUPT_FLAG = False
         SYSTEM_STATE   = "RUNNING"
-        move_to_pose_sequential(saved_positions[bin_id])
+        # Authentic transit (mirrors the legacy task that returns to home
+        # before the destination): while carrying the object, FIRST retract
+        # to the SAFE pose, THEN go to the bin. Never sweep straight from
+        # pre-grip to the bin. move_to_pose_sequential moves servo-by-servo.
+        safe_key = next((k for k in ('safe', 'home', 'start')
+                         if k in saved_positions), None)
+        if safe_key:
+            move_to_pose_sequential(saved_positions[safe_key])
+        if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
+            move_to_pose_sequential(saved_positions[bin_id])
         confirmed = False
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
             # Gap E: correct the bin drop pose + persist before releasing
