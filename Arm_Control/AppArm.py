@@ -55,8 +55,19 @@ INTERRUPT_FLAG      = False
 # ── Material → bin map (Update_2026-05-15 Arm-CNN Material Sorting) ───────────
 # Used only by the new arm_goto / arm_grip_gate / arm_place endpoints.
 # The legacy task_pick_random_place + joystick path are unaffected.
-MATERIAL_BIN = {'Hard': '4', 'Medium': '5', 'Soft': '6'}  # configurable
+# Gap D: overridable from positions.json keys "material_bin" / "reject_bin"
+# (falls back to these defaults if absent).
+MATERIAL_BIN = {'Hard': '4', 'Medium': '5', 'Soft': '6'}
 REJECT_BIN   = '7'   # unclassifiable objects (classifier returned None)
+
+# Gap B: when True, the legacy random pick-place task (joystick btn 0/1/2 and
+# /api run_task) is locked out so it cannot collide with a sort cycle.
+SORT_MODE = False
+
+# Poses AppSort.py needs present in positions.json before a real run.
+REQUIRED_SORT_POSES = ['start', 'pregrip',
+                       MATERIAL_BIN['Hard'], MATERIAL_BIN['Medium'],
+                       MATERIAL_BIN['Soft'], REJECT_BIN]
 
 if os.path.exists(POSITIONS_FILE):
     try:
@@ -64,6 +75,28 @@ if os.path.exists(POSITIONS_FILE):
             saved_positions = json.load(f)
     except Exception:
         pass
+
+# Gap D: pull bin map overrides out of positions.json if the researcher set
+# them there (keeps bin layout out of source). Pose entries are dicts of
+# channel→angle; the two config keys are a dict / a string respectively.
+_mb = saved_positions.get('material_bin')
+if isinstance(_mb, dict) and _mb:
+    MATERIAL_BIN = {str(k): str(v) for k, v in _mb.items()}
+_rb = saved_positions.get('reject_bin')
+if isinstance(_rb, (str, int)):
+    REJECT_BIN = str(_rb)
+REQUIRED_SORT_POSES = ['start', 'pregrip',
+                       *MATERIAL_BIN.values(), REJECT_BIN]
+
+# Gap C: warn at boot if any required sort pose is missing, instead of
+# failing mid-cycle after a grip has already happened.
+_missing = [p for p in REQUIRED_SORT_POSES if p not in saved_positions]
+if _missing:
+    print(f"[Sort] ⚠️  positions.json missing required poses: {_missing} "
+          f"— arm_goto/arm_place will 400 for these until saved.")
+else:
+    print(f"[Sort] All required sort poses present: {REQUIRED_SORT_POSES}")
+print(f"[Sort] MATERIAL_BIN={MATERIAL_BIN}  REJECT_BIN={REJECT_BIN!r}")
 
 def init_arm():
     for ch, data in servos.items():
@@ -161,6 +194,24 @@ def move_to_home_force():
             move_servo_to(ch, angle)
             time.sleep(0.3)
 
+def safe_home():
+    """Gap A: return the arm to a known safe pose after an interrupt/abort in
+    the new sort endpoints (they otherwise freeze the arm mid-pose, possibly
+    still over an object). Tries 'safe' → 'home' → 'start' in that order.
+    Force-drives servos (no SYSTEM_STATE gating) so it works even after STOP."""
+    for key in ('safe', 'home', 'start'):
+        if key in saved_positions:
+            for ch in [1, 2, 13, 14, 0]:
+                angle = (saved_positions[key].get(str(ch))
+                         or saved_positions[key].get(ch))
+                if angle is not None:
+                    move_servo_to(ch, angle)
+                    time.sleep(0.3)
+            print(f"[Sort] safe_home → '{key}'")
+            return
+    print("[Sort] ⚠️  safe_home: no 'safe'/'home'/'start' pose saved")
+
+
 def wait_for_permission(step_name):
     global ALLOW_MANUAL_ADJUST, CONFIRMATION_RECEIVED, SYSTEM_STATE, INTERRUPT_FLAG
     ALLOW_MANUAL_ADJUST   = True
@@ -172,6 +223,55 @@ def wait_for_permission(step_name):
         time.sleep(0.1)
     ALLOW_MANUAL_ADJUST = False
     time.sleep(0.5)
+
+
+def sort_gate(pose_key, step_name):
+    """Gap E: confirmation gate for the sort endpoints WITH manual correction.
+
+    The arm pose can drift from the saved pose; the operator must be able to
+    jog and correct it every time, then persist the correction. Manual jogging
+    is already continuous (joystick_thread runs regardless of state); this gate
+    additionally:
+      • joystick btn 8 → RE-SAVE the (corrected) current pose to
+        saved_positions[pose_key] and positions.json (so the fix sticks),
+      • joystick btn 9 → confirm and proceed,
+      • interrupt/stop  → abort.
+    Returns True if confirmed, False if interrupted. `wait_for_permission`
+    (used by the legacy task) is intentionally left unchanged."""
+    global ALLOW_MANUAL_ADJUST, CONFIRMATION_RECEIVED, SYSTEM_STATE, INTERRUPT_FLAG
+    ALLOW_MANUAL_ADJUST   = True
+    CONFIRMATION_RECEIVED = False
+    print(f"[Sort] GATE '{step_name}': jog to correct drift if needed — "
+          f"btn 8 = save '{pose_key}', btn 9 = confirm")
+    try:
+        joy = pygame.joystick.Joystick(0)
+    except Exception:
+        joy = None
+    while not CONFIRMATION_RECEIVED:
+        if INTERRUPT_FLAG or SYSTEM_STATE in ("INTERRUPT", "STOP"):
+            ALLOW_MANUAL_ADJUST = False
+            return False
+        if joy is not None:
+            try:
+                pygame.event.pump()
+                if joy.get_button(8):          # save corrected pose
+                    pose = {str(ch): servos[ch]['current']
+                            for ch in [0, 1, 2, 13, 14]}
+                    saved_positions[pose_key] = pose
+                    try:
+                        with open(POSITIONS_FILE, 'w') as f:
+                            json.dump(saved_positions, f)
+                        print(f"[Sort] re-saved '{pose_key}' = {pose}")
+                    except Exception as e:
+                        print(f"[Sort] ⚠️  save '{pose_key}' failed: {e}")
+                    time.sleep(0.5)            # debounce
+            except Exception:
+                pass
+        time.sleep(0.1)
+    ALLOW_MANUAL_ADJUST = False
+    time.sleep(0.5)
+    return True
+
 
 def task_pick_random_place(source_id):
     global SYSTEM_STATE, CONFIRMATION_RECEIVED, saved_positions, ALLOW_MANUAL_ADJUST, INTERRUPT_FLAG
@@ -271,7 +371,7 @@ def joystick_thread():
             hat = joy.get_hat(0)
             if hat[0] != 0: move_servo_manual(14,  hat[0])
             if hat[1] != 0: move_servo_manual(13, -hat[1])
-            if SYSTEM_STATE == "STOP":
+            if SYSTEM_STATE == "STOP" and not SORT_MODE:   # Gap B: locked during sort
                 if joy.get_button(0):
                     threading.Thread(target=task_pick_random_place, args=('1',), daemon=True).start()
                     time.sleep(0.3)
@@ -301,7 +401,7 @@ def index():
 
 @app.route('/api', methods=['POST'])
 def api_handler():
-    global SYSTEM_STATE, saved_positions, INTERRUPT_FLAG
+    global SYSTEM_STATE, saved_positions, INTERRUPT_FLAG, SORT_MODE
     data = request.get_json()
     cmd  = data.get('cmd')
 
@@ -315,6 +415,9 @@ def api_handler():
 
     elif cmd == 'run_task':
         source = data.get('source')
+        if SORT_MODE:                                  # Gap B: locked during sort
+            return jsonify({'status': 'locked',
+                            'reason': 'sort mode active'})
         if SYSTEM_STATE == "RUNNING":
             return jsonify({'status': 'busy'})
         threading.Thread(target=task_pick_random_place, args=(source,), daemon=True).start()
@@ -329,7 +432,8 @@ def api_handler():
     # Additive. Reuse move_to_pose_sequential + wait_for_permission as-is.
     elif cmd == 'status':
         return jsonify({'state': SYSTEM_STATE,
-                        'confirmed': CONFIRMATION_RECEIVED})
+                        'confirmed': CONFIRMATION_RECEIVED,
+                        'sort_mode': SORT_MODE})
 
     elif cmd == 'arm_goto':
         target = str(data.get('target', ''))
@@ -341,6 +445,8 @@ def api_handler():
         move_to_pose_sequential(saved_positions[target])
         interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
         SYSTEM_STATE = "STOP"
+        if interrupted:
+            safe_home()                                # Gap A
         return jsonify({'status': 'interrupt' if interrupted else 'at',
                         'target': target})
 
@@ -354,10 +460,14 @@ def api_handler():
         INTERRUPT_FLAG = False
         SYSTEM_STATE   = "RUNNING"
         move_to_pose_sequential(saved_positions[target])
+        confirmed = False
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
-            wait_for_permission("Ready to grip")
-        interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+            # Gap E: jog-to-correct + persist (btn 8) + confirm (btn 9)
+            confirmed = sort_gate(target, "Ready to grip")
+        interrupted = (not confirmed) or INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
         SYSTEM_STATE = "STOP"
+        if interrupted:
+            safe_home()                                # Gap A
         return jsonify({'status': 'interrupt' if interrupted else 'confirmed',
                         'target': target})
 
@@ -373,12 +483,22 @@ def api_handler():
         INTERRUPT_FLAG = False
         SYSTEM_STATE   = "RUNNING"
         move_to_pose_sequential(saved_positions[bin_id])
+        confirmed = False
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
-            wait_for_permission(f"Ready to drop at bin {bin_id}")
-        interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+            # Gap E: correct the bin drop pose + persist before releasing
+            confirmed = sort_gate(bin_id, f"Ready to drop at bin {bin_id}")
+        interrupted = (not confirmed) or INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
         SYSTEM_STATE = "STOP"
+        if interrupted:
+            safe_home()                                # Gap A
         return jsonify({'status': 'interrupt' if interrupted else 'at_bin',
                         'bin': bin_id, 'material': material})
+
+    elif cmd == 'sort_mode':
+        # Gap B: AppSort enables this for the whole session so the legacy
+        # random task can't be triggered between cycles. Idempotent.
+        SORT_MODE = bool(data.get('on', True))
+        return jsonify({'status': 'ok', 'sort_mode': SORT_MODE})
 
     return jsonify({'status': 'unknown'})
 

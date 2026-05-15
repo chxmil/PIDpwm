@@ -83,6 +83,15 @@ class ArmClient:
         # Carries to material bin, blocks until operator confirms the drop.
         return self._post({'cmd': 'arm_place', 'material': material}, GATED_TIMEOUT)
 
+    def sort_mode(self, on):
+        # Locks out the legacy random pick-place task for the whole session
+        # (manual joystick jog + pose re-save stay available).
+        try:
+            return self._post({'cmd': 'sort_mode', 'on': bool(on)}, QUICK_TIMEOUT)
+        except Exception as e:
+            print(f"[AppSort] sort_mode({on}) failed: {e}")
+            return None
+
     def stop(self):
         try:
             return self._post({'cmd': 'stop'}, QUICK_TIMEOUT)
@@ -162,7 +171,8 @@ def main():
     print("  AppSort — Arm + CNN material sorting (semi-automatic)")
     print(f"  Gripper port : {args.port}")
     print(f"  Arm host     : {args.arm_host}")
-    print("  Confirm each GRIP and DROP on the Pi joystick (btn 9).")
+    print("  At each gate: jog to correct drift (joystick), btn 8 = save")
+    print("  the corrected pose, btn 9 = confirm. Confirm every GRIP & DROP.")
     print("=" * 55)
 
     ser = SerialPort(args.port)
@@ -170,6 +180,7 @@ def main():
         return
     arm = ArmClient(args.arm_host)
     gh  = GripHold(ser, parse_sensor, GRIP_CONFIG)
+    arm.sort_mode(True)   # lock legacy random task for the session (Gap B)
 
     os.makedirs(args.log_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -221,6 +232,7 @@ def main():
             else:
                 print(f"  Unknown: {cmd}")
     finally:
+        arm.sort_mode(False)   # release legacy-task lock on exit
         ser.close()
         sort_file.close()
         print(f"\n  Done: {loop_idx} cycles. Sort log: {sort_path}")
