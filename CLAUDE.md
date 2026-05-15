@@ -29,6 +29,8 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 
 ```
 project/
+├── Arm_Control/
+|    ├── AppArm.py                      # code from raspberry pi to control arm
 ├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification (RF + CNN)
 ├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID, optional Stage 2.5 probe; returns trial dict (incl. probe_records)
 ├── MaterialClassifier.py       # Phase A (RF) runtime inference; loads Model/material_rf.pkl

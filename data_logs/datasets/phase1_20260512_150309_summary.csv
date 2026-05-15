@@ -1,0 +1,3 @@
+loop_index,material_label,tag,pred_material,prob_Hard,prob_Medium,prob_Soft,max_force_n,contact_detected,baseline_res_k,pkt_count
+1,soft,,Soft,0.055,0.055,0.89,8.0312,1,795.7343,812
+2,soft,,Soft,0.16,0.255,0.585,9.4528,1,704.7823,400

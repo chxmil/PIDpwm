@@ -1,0 +1,2 @@
+loop_index,material_label,tag,pred_material_rf,prob_Hard_rf,prob_Medium_rf,prob_Soft_rf,pred_material_cnnpid,prob_Hard_cnnpid,prob_Medium_cnnpid,prob_Soft_cnnpid,pred_material_cnn,prob_Hard_cnn,prob_Medium_cnn,prob_Soft_cnn,max_force_n,contact_detected,baseline_res_k,pkt_count,probe_len
+1,,,Medium,0.10,0.53,0.38,Hard,1.00,0.00,0.00,,,,,4.5398,1,619.7475,399,0
