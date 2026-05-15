@@ -7,15 +7,15 @@ SEMI-AUTOMATIC, NOT autonomous. `wait_for_permission` on the Pi stays:
 the operator confirms (joystick btn 9) before every grip and every drop;
 this orchestrator BLOCKS on those gated HTTP calls.
 
-Per object:
-  1. arm_goto <start>                          (PC → Pi, short timeout)
-  2. arm_grip_gate <pregrip>  → blocks on human confirm
-  3. GripHold.grip()          → approach + PID, then HOLD (object stays gripped)
+Authentic cycle:  Safe -> Pregrip -> Predict -> Safe -> Bin -> Safe
+  1. arm_safe                 → Safe   (servo 13>14>2>1>0, no permission)
+  2. arm_grip_gate <pregrip>  → Pregrip: 0>1>2>14 -permission- 13 -permission-
+  3. GripHold.grip()          → Predict: approach + PID, then HOLD
   4. classify  (CNN-PID primary, RF v4 fallback)
-  5. arm_place <material>     → retract to SAFE (carrying), then to material
-                                bin, blocks on human confirm  (servo-by-servo)
+  5. arm_place <material>     → retract Safe (13>14>2>1>0), then Bin
+                                (0>1>2>14>13) -permission-
   6. GripHold.release()       → Stage-5 drop
-  7. arm_goto <start>         → loop
+  7. arm_safe                 → Safe, then loop
 
 `App.py` / `ModelInclude.py` are NOT modified — SerialPort + parse_sensor are
 imported from App.py; grip logic lives in GripHold.py; classifiers are the
@@ -76,6 +76,10 @@ class ArmClient:
     def goto(self, target):
         return self._post({'cmd': 'arm_goto', 'target': target}, QUICK_TIMEOUT)
 
+    def safe(self):
+        # Retract to the safe pose (servo order 13>14>2>1>0, no permission).
+        return self._post({'cmd': 'arm_safe'}, GATED_TIMEOUT)
+
     def grip_gate(self, target):
         # Blocks until the operator confirms on the Pi (joystick btn 9).
         return self._post({'cmd': 'arm_grip_gate', 'target': target}, GATED_TIMEOUT)
@@ -126,25 +130,25 @@ def _p(probs, k):
 
 
 def run_cycle(loop_idx, ser, gh, arm, args, sort_writer, sort_file):
-    """One pick→grip→classify→place→release object cycle."""
+    """One authentic cycle: Safe -> Pregrip -> Predict -> Safe -> Bin -> Safe."""
     print(f"\n{'='*46}\n  SORT CYCLE {loop_idx}\n{'='*46}")
 
-    arm.goto(args.start_pose)
-    print(f"  → confirm GRIP on the Pi joystick (btn 9) to continue…")
-    arm.grip_gate(args.pregrip_pose)              # blocks on human
+    arm.safe()                                    # -> Safe (13>14>2>1>0)
+    print(f"  → confirm PREGRIP on the Pi (joystick btn 9 or web CONFIRM)…")
+    arm.grip_gate(args.pregrip_pose)              # -> Pregrip, 2 permissions
 
-    result = gh.grip(loop_idx, None, "", args.tag)   # grip + enter HOLD
+    result = gh.grip(loop_idx, None, "", args.tag)   # Predict: grip + hold
     label, pid_probs, rf_probs = _classify(result)
     chosen = label or "Reject"
     print(f"\n  Material → {chosen}  "
           f"(CNN-PID {label or '-'} / RF fallback)  maxF={result['max_force']:.2f}N")
 
-    print(f"  → confirm DROP on the Pi joystick (btn 9) to release…")
-    place = arm.place(chosen)                     # blocks on human; maps → bin
+    print(f"  → confirm DROP on the Pi (joystick btn 9 or web CONFIRM)…")
+    place = arm.place(chosen)                     # -> Safe, then Bin, 1 permission
     bin_id = (place or {}).get('bin', '?')
 
     gh.release()                                  # Stage-5 drop
-    arm.goto(args.start_pose)
+    arm.safe()                                    # -> Safe (13>14>2>1>0)
 
     sort_writer.writerow([
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), loop_idx,

@@ -1,0 +1,3 @@
+timestamp,loop_index,pred_label,pid_Hard,pid_Medium,pid_Soft,rf_Hard,rf_Medium,rf_Soft,chosen,bin,max_force_n,contact,baseline_res_k,pkt_count
+2026-05-15 20:49:28,1,Soft,0.00,0.00,1.00,,,,Soft,6,3.6784,1,746.0961,399
+2026-05-15 20:50:12,2,Soft,,,,0.04,0.06,0.91,Soft,6,4.6059,1,740.8450,379

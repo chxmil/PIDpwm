@@ -101,8 +101,8 @@ Optional args:
 |---|---|---|
 | `--port` | `COM18` | Gripper serial port |
 | `--arm-host` | `192.168.50.244:5001` | Pi address |
-| `--start-pose` | `start` | Pose name returned to each cycle |
-| `--pregrip-pose` | `pregrip` | Pose for the grip gate |
+| `--start-pose` | `start` | (unused — the Pi resolves the safe pose as `safe`→`home`→`start`) |
+| `--pregrip-pose` | `pregrip` | Pose for the pregrip gate |
 | `--tag` | `sort` | Tag in the audit log |
 | `--log-dir` | `data_logs` | Where `sort_log_<ts>.csv` is written |
 
@@ -116,19 +116,29 @@ Runtime commands (type then Enter):
 
 ---
 
-## 5. One cycle — what happens & what you do
+## 5. One cycle — authentic motion
 
-| Step | System (auto) | You (joystick on the Pi) |
+**Cycle:** `Safe → Pregrip → Predict → Safe → Bin → Safe`. All moves are
+**servo-by-servo** in a fixed order:
+
+- **To pregrip:** ch `0 → 1 → 2 → 14` → **permission 1** → ch `13` →
+  **permission 2** → grip
+- **To safe (retract):** ch `13 → 14 → 2 → 1 → 0` (no permission)
+- **To bin:** ch `0 → 1 → 2 → 14 → 13` → **permission** → release
+
+| Step | System (auto) | You (joystick btn 9 or web CONFIRM) |
 |---|---|---|
-| 1 | Arm → `start` | — |
-| 2 | Arm → `pregrip`, **GRIP GATE opens** | Jog to correct drift if needed. **Btn 8** = save corrected `pregrip`. **Btn 9** = confirm grip. |
-| 3 | Gripper approaches + PID, then **holds** the object | — |
-| 4 | Classify (CNN-PID → RF fallback) | — |
-| 5 | Arm **retracts to SAFE while carrying**, then moves to the material bin (servo-by-servo), **DROP GATE opens** | Jog to correct bin pose if needed. **Btn 8** = save corrected bin pose. **Btn 9** = confirm drop. |
-| 6 | Gripper releases (drops object) | — |
-| 7 | Arm → `start`, log row written | — |
+| 1 | Arm retracts to **SAFE** (`13>14>2>1>0`) | — |
+| 2 | Arm to **pregrip** coarse (`0>1>2>14`), **GATE 1** | Jog to correct, **btn 8** saves `pregrip`, **confirm** |
+| 3 | Arm moves wrist **13**, **GATE 2** | Fine-jog, **btn 8** saves, **confirm** |
+| 4 | **Predict:** gripper approaches + PID, then **holds**; classify | — |
+| 5 | Arm **retracts to SAFE while carrying** (`13>14>2>1>0`) | — |
+| 6 | Arm to **bin** (`0>1>2>14>13`), **DROP GATE** | Jog to correct bin, **btn 8** saves, **confirm** |
+| 7 | Gripper releases (drops object) | — |
+| 8 | Arm retracts to **SAFE** again → loop, log row written | — |
 
 Material → bin (defaults): **Hard→4, Medium→5, Soft→6**, unclassifiable→**7**.
+There are **two confirms at pregrip** (coarse, then wrist) and **one at the bin**.
 
 ---
 

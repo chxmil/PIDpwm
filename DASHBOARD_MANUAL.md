@@ -15,13 +15,16 @@ robot.
 You place an object at the pick spot. The PC closes the haptic gripper,
 measures the squeeze, and an AI decides the material (Hard / Medium / Soft).
 The arm then carries the object to that material's bin. You only have to
-**watch and press CONFIRM** at two points (grip and drop) so nothing moves
-unexpectedly.
+**watch and press CONFIRM** at the gates (two at pregrip, one at the bin) so
+nothing moves unexpectedly.
 
 ```
-  You place object  ->  Arm to pre-grip  ->  [CONFIRM]  ->  PC grips + AI
-        ->  Arm retracts to SAFE (carrying)  ->  moves to material bin
-        ->  [CONFIRM]  ->  drop  ->  repeat
+  Cycle:  Safe -> Pregrip -> Predict -> Safe -> Bin -> Safe
+
+  Arm to SAFE -> moves to pregrip (coarse) -> [CONFIRM 1]
+   -> moves wrist -> [CONFIRM 2] -> PC grips + AI classifies
+   -> retract to SAFE (carrying) -> moves to material bin -> [CONFIRM]
+   -> drop -> back to SAFE -> repeat
 ```
 
 Two machines work together:
@@ -125,22 +128,24 @@ In the PC terminal type:
 - `a` then Enter = **auto** loop (keep sorting; type `q` then Enter to stop)
 - `q` then Enter = quit
 
-### Step 4 - the GRIP gate
-The arm moves to PRE-GRIP. The dashboard banner turns **amber: "[ WAITING ]
-Ready to grip - press CONFIRM"**.
+### Step 4 - the PREGRIP gates (TWO confirms)
+The arm starts at SAFE and moves toward PRE-GRIP in two stages:
 
-- If the gripper is correctly around the object: press **CONFIRM**.
-- If it drifted: nudge the arm with the **joystick** to fix it, then either
-  press joystick **button 8** (saves the corrected PRE-GRIP) or just press
-  **CONFIRM** to continue without saving.
+1. **Coarse** (joints 0,1,2,14) - banner amber **"[ WAITING ] Pregrip
+   coarse"**. Jog to correct if needed (btn 8 saves), then **CONFIRM**.
+2. **Wrist** (joint 13) - banner amber **"[ WAITING ] Pregrip wrist"**.
+   Fine-jog if needed (btn 8 saves), then **CONFIRM** again.
 
-### Step 5 - automatic grip + AI
+So there are **two CONFIRMs** before the grip - a coarse align then a fine
+wrist align.
+
+### Step 5 - Predict (automatic grip + AI)
 The PC closes the gripper, holds the object, and the AI classifies the
-material. Nothing for you to do. The result will appear in **Last Sorted**.
+material. Nothing for you to do. The result appears in **Last Sorted**.
 
 ### Step 6 - the DROP gate
-The arm first **retracts to the SAFE pose while carrying the object**, then
-moves (servo-by-servo) to the matching bin - it never sweeps straight across.
+The arm **retracts to SAFE while carrying** (joints 13>14>2>1>0), then moves
+to the matching bin (joints 0>1>2>14>13) - it never sweeps straight across.
 Banner: **amber "[ WAITING ] Ready to drop at bin X"**.
 
 - Press **CONFIRM** to release the object into the bin.
@@ -148,8 +153,8 @@ Banner: **amber "[ WAITING ] Ready to drop at bin X"**.
   the corrected bin pose).
 
 ### Step 7 - repeat
-The arm returns to START. Place the next object (or, in auto mode, the cycle
-repeats automatically). **Last Sorted** shows what just happened.
+The arm retracts to **SAFE** again. Place the next object (or, in auto mode,
+the cycle repeats). **Last Sorted** shows what just happened.
 
 ---
 

@@ -188,6 +188,55 @@ def move_to_pose_sequential(target_pose, reverse=False):
                 return
             time.sleep(0.1)
 
+# ── Authentic sort motion: ordered servo-by-servo movers ─────────────────
+# Cycle: Safe -> Pregrip -> Predict -> Safe -> Bin -> Safe
+#   to pregrip : 0>1>2>14 -> permission -> 13 -> permission -> Grip
+#   to safe    : 13>14>2>1>0           (retract, no permission)
+#   to bin     : 0>1>2>14>13 -> permission -> release
+PREGRIP_ORDER_COARSE = [0, 1, 2, 14]      # then permission
+PREGRIP_ORDER_FINE   = [13]               # then permission, then Grip
+SAFE_ORDER           = [13, 14, 2, 1, 0]  # retract — no permission
+BIN_ORDER            = [0, 1, 2, 14, 13]  # then permission, then release
+
+
+def _move_channels(pose, channels):
+    """Move the given servo channels, in the given order, one at a time
+    (eased). Returns False if interrupted."""
+    global SYSTEM_STATE, INTERRUPT_FLAG
+    for ch in channels:
+        if INTERRUPT_FLAG or SYSTEM_STATE in ("INTERRUPT", "STOP"):
+            return False
+        ang = pose.get(str(ch))
+        if ang is None:
+            ang = pose.get(ch)
+        if ang is not None:
+            move_single_channel_smooth(ch, ang, duration=0.8)
+            if INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT":
+                return False
+            time.sleep(0.1)
+    return True
+
+
+def _resolve_safe():
+    """(key, pose) for the safe pose: first of safe/home/start present."""
+    for k in ('safe', 'home', 'start'):
+        if k in saved_positions:
+            return k, saved_positions[k]
+    return None, None
+
+
+def move_to_safe_ordered():
+    """Retract to the safe pose, channels 13>14>2>1>0, no permission."""
+    key, pose = _resolve_safe()
+    if pose is None:
+        print("[Sort] WARNING move_to_safe: no safe/home/start pose saved")
+        return False
+    ok = _move_channels(pose, SAFE_ORDER)
+    if ok:
+        print(f"[Sort] at SAFE ('{key}')")
+    return ok
+
+
 def move_to_home_force():
     global saved_positions
     if 'home' not in saved_positions:
@@ -478,11 +527,18 @@ def api_handler():
                             'reason': f'no saved pose {target!r}'}), 400
         INTERRUPT_FLAG = False
         SYSTEM_STATE   = "RUNNING"
-        move_to_pose_sequential(saved_positions[target])
-        confirmed = False
+        # Authentic: 0>1>2>14 -> permission -> 13 -> permission -> (PC grips)
+        _move_channels(saved_positions[target], PREGRIP_ORDER_COARSE)
+        g1 = False
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
-            # Gap E: jog-to-correct + persist (btn 8) + confirm (btn 9)
-            confirmed = sort_gate(target, "Ready to grip")
+            g1 = sort_gate(target, "Pregrip coarse (0/1/2/14) - jog & confirm")
+        if g1 and not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
+            # operator may have jogged + btn-8 saved 'target'; re-read it
+            _move_channels(saved_positions[target], PREGRIP_ORDER_FINE)
+        g2 = False
+        if g1 and not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
+            g2 = sort_gate(target, "Pregrip wrist (13) - jog & confirm")
+        confirmed = g1 and g2
         interrupted = (not confirmed) or INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
         SYSTEM_STATE = "STOP"
         if interrupted:
@@ -501,20 +557,15 @@ def api_handler():
                             'material': material}), 400
         INTERRUPT_FLAG = False
         SYSTEM_STATE   = "RUNNING"
-        # Authentic transit (mirrors the legacy task that returns to home
-        # before the destination): while carrying the object, FIRST retract
-        # to the SAFE pose, THEN go to the bin. Never sweep straight from
-        # pre-grip to the bin. move_to_pose_sequential moves servo-by-servo.
-        safe_key = next((k for k in ('safe', 'home', 'start')
-                         if k in saved_positions), None)
-        if safe_key:
-            move_to_pose_sequential(saved_positions[safe_key])
+        # Authentic: retract to SAFE (13>14>2>1>0) while carrying, THEN to
+        # the bin (0>1>2>14>13) -> permission -> (PC releases).
+        move_to_safe_ordered()
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
-            move_to_pose_sequential(saved_positions[bin_id])
+            _move_channels(saved_positions[bin_id], BIN_ORDER)
         confirmed = False
         if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
             # Gap E: correct the bin drop pose + persist before releasing
-            confirmed = sort_gate(bin_id, f"Ready to drop at bin {bin_id}")
+            confirmed = sort_gate(bin_id, f"Ready to drop at bin {bin_id} - confirm")
         interrupted = (not confirmed) or INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
         SYSTEM_STATE = "STOP"
         if interrupted:
@@ -524,6 +575,16 @@ def api_handler():
                          'ts': time.strftime('%H:%M:%S')}
         return jsonify({'status': 'interrupt' if interrupted else 'at_bin',
                         'bin': bin_id, 'material': material})
+
+    elif cmd == 'arm_safe':
+        # Retract to the safe pose, servo order 13>14>2>1>0, no permission.
+        # Used by AppSort at the start of each cycle and after the drop.
+        INTERRUPT_FLAG = False
+        SYSTEM_STATE   = "RUNNING"
+        ok = move_to_safe_ordered()
+        interrupted = (not ok) or INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+        SYSTEM_STATE = "STOP"
+        return jsonify({'status': 'interrupt' if interrupted else 'at_safe'})
 
     elif cmd == 'sort_mode':
         # Gap B: AppSort enables this for the whole session so the legacy
