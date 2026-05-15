@@ -73,7 +73,7 @@
 
   <div class="header">
     <h1>&#129520; Material Sorting Console</h1>
-    <span id="conn" class="pill off">&#9679; connecting…</span>
+    <span id="conn" class="pill off">&#9679; connecting&hellip;</span>
   </div>
 
   <!-- LIVE STATUS -->
@@ -95,8 +95,8 @@
     </div>
     <p class="note" style="margin-top:12px">
       The PC (<b>AppSort.py</b>) drives grip &amp; classification. When the arm
-      reaches the object or a bin it <b>waits here</b> — correct the pose with
-      the joystick if it drifted, then press <b>CONFIRM</b> (or joystick
+      reaches the object or a bin it <b>waits here</b> &mdash; correct the pose
+      with the joystick if it drifted, then press <b>CONFIRM</b> (or joystick
       btn&nbsp;9). Joystick btn&nbsp;8 also saves the corrected pose.
     </p>
   </div>
@@ -165,7 +165,7 @@ function savePos(name){
 function runTask(src){
   post({cmd:'run_task',source:src}).then(d=>{
     toast(d.status==='started' ? 'Legacy task running'
-        : d.status==='locked'  ? 'Locked — sort mode active'
+        : d.status==='locked'  ? 'Locked - sort mode active'
         : 'Status: '+d.status);
   });
 }
@@ -177,7 +177,7 @@ function confirmGate(){
 }
 function stopAll(){ post({cmd:'stop'}).then(()=>toast('EMERGENCY STOP sent')); }
 
-// ── Live status poll (1 Hz) ──────────────────────────────────────────
+// Live status poll (1 Hz)
 function refresh(){
   post({cmd:'status'}).then(d=>{
     document.getElementById('conn').className='pill on';
@@ -188,13 +188,13 @@ function refresh(){
       d.sort_mode ? 'ON (sorting)' : 'off';
     const ls = d.last_sort || {};
     document.getElementById('st-last').textContent =
-      ls.material ? (ls.material+' → bin '+ls.bin) : '--';
+      ls.material ? (ls.material+' -> bin '+ls.bin) : '--';
 
     const g = document.getElementById('gate');
     const btn = document.getElementById('btn-confirm');
     if (d.awaiting){
       g.className='gate waiting';
-      g.textContent='⏳  '+(d.gate||'Waiting')+' — press CONFIRM';
+      g.textContent='[ WAITING ]  '+(d.gate||'')+'  - press CONFIRM';
       btn.disabled=false;
     } else if (d.gate){
       g.className='gate idle'; g.textContent=d.gate+' (confirmed)';
