@@ -52,6 +52,12 @@ ALLOW_MANUAL_ADJUST = False
 CONFIRMATION_RECEIVED = False
 INTERRUPT_FLAG      = False
 
+# ── Material → bin map (Update_2026-05-15 Arm-CNN Material Sorting) ───────────
+# Used only by the new arm_goto / arm_grip_gate / arm_place endpoints.
+# The legacy task_pick_random_place + joystick path are unaffected.
+MATERIAL_BIN = {'Hard': '4', 'Medium': '5', 'Soft': '6'}  # configurable
+REJECT_BIN   = '7'   # unclassifiable objects (classifier returned None)
+
 if os.path.exists(POSITIONS_FILE):
     try:
         with open(POSITIONS_FILE, 'r') as f:
@@ -318,6 +324,61 @@ def api_handler():
         INTERRUPT_FLAG = True
         SYSTEM_STATE   = "INTERRUPT"
         return jsonify({'status': 'stopped'})
+
+    # ── Arm-CNN material-sorting endpoints (Update_2026-05-15) ───────────────
+    # Additive. Reuse move_to_pose_sequential + wait_for_permission as-is.
+    elif cmd == 'status':
+        return jsonify({'state': SYSTEM_STATE,
+                        'confirmed': CONFIRMATION_RECEIVED})
+
+    elif cmd == 'arm_goto':
+        target = str(data.get('target', ''))
+        if target not in saved_positions:
+            return jsonify({'status': 'error',
+                            'reason': f'no saved pose {target!r}'}), 400
+        INTERRUPT_FLAG = False
+        SYSTEM_STATE   = "RUNNING"
+        move_to_pose_sequential(saved_positions[target])
+        interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+        SYSTEM_STATE = "STOP"
+        return jsonify({'status': 'interrupt' if interrupted else 'at',
+                        'target': target})
+
+    elif cmd == 'arm_grip_gate':
+        # Move to the pre-grip pose, then BLOCK on operator confirmation
+        # (joystick btn 9) before the PC is allowed to grip.
+        target = str(data.get('target', 'pregrip'))
+        if target not in saved_positions:
+            return jsonify({'status': 'error',
+                            'reason': f'no saved pose {target!r}'}), 400
+        INTERRUPT_FLAG = False
+        SYSTEM_STATE   = "RUNNING"
+        move_to_pose_sequential(saved_positions[target])
+        if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
+            wait_for_permission("Ready to grip")
+        interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+        SYSTEM_STATE = "STOP"
+        return jsonify({'status': 'interrupt' if interrupted else 'confirmed',
+                        'target': target})
+
+    elif cmd == 'arm_place':
+        # Map material → bin, carry the held object there, then BLOCK on
+        # operator confirmation before the PC releases.
+        material = str(data.get('material', ''))
+        bin_id   = MATERIAL_BIN.get(material, REJECT_BIN)
+        if bin_id not in saved_positions:
+            return jsonify({'status': 'error',
+                            'reason': f'no bin pose {bin_id!r}',
+                            'material': material}), 400
+        INTERRUPT_FLAG = False
+        SYSTEM_STATE   = "RUNNING"
+        move_to_pose_sequential(saved_positions[bin_id])
+        if not (INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"):
+            wait_for_permission(f"Ready to drop at bin {bin_id}")
+        interrupted = INTERRUPT_FLAG or SYSTEM_STATE == "INTERRUPT"
+        SYSTEM_STATE = "STOP"
+        return jsonify({'status': 'interrupt' if interrupted else 'at_bin',
+                        'bin': bin_id, 'material': material})
 
     return jsonify({'status': 'unknown'})
 

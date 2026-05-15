@@ -30,10 +30,13 @@ The running system (`App.py` + `ModelInclude.py`) does **closed-loop force contr
 ```
 project/
 ├── Arm_Control/
-|    ├── AppArm.py                      # code from raspberry pi to control arm
-├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification (RF + CNN)
-├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID, optional Stage 2.5 probe; returns trial dict (incl. probe_records)
+|    ├── AppArm.py                      # Raspberry Pi arm control (Flask:5001). + additive arm_goto/arm_grip_gate/arm_place/status endpoints + MATERIAL_BIN (Update_2026-05-15); legacy joystick/random task untouched
+├── App.py                      # Entry point: serial comms, CSV logging, user commands, post-grip material classification (RF + CNN) — FROZEN
+├── ModelInclude.py             # run_one_grip() — all grip logic, inference, PID, optional Stage 2.5 probe; returns trial dict (incl. probe_records) — FROZEN
+├── AppSort.py                  # Arm+CNN material-sorting orchestrator (PC=master): drives AppArm over HTTP, grips via GripHold, classifies, sorts to material bin (Update_2026-05-15)
+├── GripHold.py                 # Hold-capable grip for sorting: grip()→hold(bg thread)→release(); reuses ModelInclude model/scalers; reproduces CLAUDE.md §5–§7 (Update_2026-05-15)
 ├── MaterialClassifier.py       # Phase A (RF) runtime inference; loads Model/material_rf.pkl
+├── MaterialPIDCNNClassifier.py # Phase A-prime (1D-CNN on PID-grip trace) runtime inference; loads Model/material_cnn_pid.keras
 ├── MaterialCNNClassifier.py    # Phase B (1D-CNN) runtime inference; loads Model/material_cnn.keras; opt-in via --probe
 ├── Claude Report/              # Claude's diagnostic reports (one .md per iteration)
 │   ├── Issue Report/           # Open issues and architectural concerns (one .md per issue) — cleared each `today` run
@@ -53,6 +56,7 @@ project/
 │   │   ├── *.csv               # Phase A raw per-packet CSVs — auto-discovered by train_material_rf.py
 │   │   ├── bin/                # Files excluded from Phase A training
 │   │   └── probe/              # Phase B probe-phase CSVs (40 rows × 5 features per trial, concatenated)
+│   ├── sort_log_<ts>.csv       # AppSort per-object audit (pred/probs/bin/force) — Update_2026-05-15
 │   └── (live session captures: phase1_<ts>.csv + phase1_<ts>_summary.csv + optional phase1_<ts>_probe.csv)
 ├── Model/
 │   ├── my_cnn_lstm_model.keras # Force prediction model (active)

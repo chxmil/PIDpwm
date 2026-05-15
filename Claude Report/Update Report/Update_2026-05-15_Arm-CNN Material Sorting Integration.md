@@ -214,14 +214,18 @@ Use **Phase A-prime CNN-PID** as primary (`classify_pid`, CV 0.942, Hard F1
 
 ---
 
-## 10. Implementation Sequence (filled on acceptance)
+## 10. Implementation Sequence (applied 2026-05-15)
 
-1. _(pending)_ Build `GripHold.py` — hold-capable grip per CLAUDE.md §5–§7 (approach + PID → hold → external `release()` + hold watchdog); unit-check sign rule & anti-windup against spec.
-2. _(pending)_ Add additive `arm_goto` / `arm_grip_gate` / `arm_place` / `status` endpoints + `MATERIAL_BIN` to `AppArm.py`, **reusing** `wait_for_permission`; verify legacy joystick/random task unaffected.
-3. _(pending)_ Create `AppSort.py`: serial open, `GripHold` call, `classify_pid`→`classify_trial` fallback, blocking HTTP client (long timeout on gated calls), material→bin, `sort_log` CSV.
-4. _(pending)_ Dry-run with Pi (no object): pose moves + both confirmation gates + reject-bin path.
-5. _(pending)_ End-to-end test (haptic gripper carries): record per-class sort accuracy + hold stability during transport.
-6. _(pending)_ Update CLAUDE.md §2 file structure; write DevLog for the code added.
+1. ✅ **DONE** — `GripHold.py` built: `grip()` (approach + PID, exits on force-settle or `GRIP_DURATION`) → background `_hold_loop()` (maintains force + 20 Hz PWM resend, `HOLD_TIMEOUT` safety) → `release()` Stage-5. Reuses `ModelInclude` model/scalers; sign rule + ±100 anti-windup + LPF + −120 floor copied verbatim from spec.
+2. ✅ **DONE** — `Arm_Control/AppArm.py`: added `status` / `arm_goto` / `arm_grip_gate` / `arm_place` + `MATERIAL_BIN` + `REJECT_BIN`, reusing `wait_for_permission` (state set RUNNING→STOP so it actually blocks). Legacy joystick/random task + all existing routes unchanged.
+3. ✅ **DONE** — `AppSort.py`: imports `SerialPort`/`parse_sensor` from `App.py` (no edits), `GripHold`, classifiers; stdlib `urllib` HTTP client (600 s gated / 5 s quick); CNN-PID→RF fallback; `data_logs/sort_log_<ts>.csv`; `_safe_cycle` safe-stop. `App.py`/`ModelInclude.py` untouched.
+4. ⏳ **PENDING (needs Pi+gripper)** — Dry-run: pose moves + both confirmation gates + reject-bin path.
+5. ⏳ **PENDING (needs Pi+gripper)** — End-to-end on-robot test: per-class sort accuracy + hold stability during transport.
+6. ✅ **DONE** — CLAUDE.md §2 updated (AppSort/GripHold/MaterialPIDCNNClassifier/sort_log + AppArm note + App/ModelInclude marked FROZEN); DevLog `DevLog_2026-05-15_Arm-CNN Material Sorting.md` written.
+
+**Static verification:** `py_compile` clean on `GripHold.py`, `AppSort.py`,
+`Arm_Control/AppArm.py`. Steps 4–5 require the physical Pi + gripper and the
+researcher's pre-saved poses (`start`, `pregrip`, bins `4/5/6/7`).
 
 ---
 
