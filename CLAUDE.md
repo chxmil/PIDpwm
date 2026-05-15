@@ -78,6 +78,7 @@ project/
 │   └── skills/
 │       └── Skill.md            # Project management rules (report lifecycle, git workflow, trigger words)
 ├── bin/                        # Archived scripts and backup files
+├── SORTING_MANUAL.md           # Operator guide for AppSort + AppArm material sorting (poses, joystick, gates, safety)
 ├── README.md                   # All about current project
 └── CLAUDE.md                   # This file — authoritative spec for Claude Code
 ```
